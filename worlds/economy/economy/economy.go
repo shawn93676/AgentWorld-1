@@ -68,6 +68,8 @@ func (w *World) transferLocked(from, to, amount int64, kind, detail string) bool
 
 // maxTxLog 交易记录保留上限（资金流动总量仍由 doneTx 偏移累计，观测不受影响）。
 const maxTxLog = 5000
+// maxContracts 合约记录保留上限（累计统计由 contractStat* 计数器维护，裁剪不丢）。
+const maxContracts = 5000
 
 // BalanceOf 返回某 Agent 余额。
 func (w *World) BalanceOf(id int64) int64 {
@@ -532,6 +534,12 @@ func (w *World) HireAgent(employer, worker int64, serviceID string) (int64, bool
 	}
 	w.nextContractID++
 	w.Contracts = append(w.Contracts, ct)
+	w.contractStatTotal++
+	// 裁剪：只保留最近 maxContracts 条，防止无限增长（累计统计由计数器维护，不丢）
+	if len(w.Contracts) > maxContracts {
+		drop := len(w.Contracts) - maxContracts
+		w.Contracts = w.Contracts[drop:]
+	}
 	// 冷却：worker 忙到 ReadyAt（服务执行中），雇主忙一小段（下单协调，不能无限下单）
 	wrk.BusyUntil = ct.ReadyAt
 	if emp.BusyUntil.Before(ct.ReadyAt) {
@@ -579,6 +587,7 @@ func (w *World) SettleContracts(now time.Time) int {
 		wrk := w.Agents[ct.Worker]
 		if wrk == nil {
 			ct.Status = "failed"
+			w.contractStatFailed++
 			w.obs.Publish("contract.failed", map[string]interface{}{"id": ct.ID, "reason": "worker gone"})
 			continue
 		}
@@ -589,6 +598,9 @@ func (w *World) SettleContracts(now time.Time) int {
 		success := rand.Float64() < SkillSuccessRate(lv)
 		if success {
 			ct.Status = "completed"
+			w.contractStatCompleted++
+			w.contractStatVolume += ct.Price
+			w.contractStatMoved += ct.Escrow
 			// Escrow 释放给 worker
 			w.transferLocked(0, ct.Worker, ct.Escrow, "contract-pay", ct.Service)
 			if a, ok := w.Agents[ct.Worker]; ok {
@@ -606,6 +618,7 @@ func (w *World) SettleContracts(now time.Time) int {
 			})
 		} else {
 			ct.Status = "failed"
+			w.contractStatFailed++
 			// 失败：Escrow 退回雇主
 			w.transferLocked(0, ct.Employer, ct.Escrow, "contract-refund", ct.Service+"退款")
 			if a, ok := w.Agents[ct.Worker]; ok {
@@ -621,6 +634,7 @@ func (w *World) SettleContracts(now time.Time) int {
 			})
 		}
 	}
+	w.touchVersionLocked()
 	return settled
 }
 
@@ -927,7 +941,6 @@ func (w *World) snapshotLocked() *PublicSnapshot {
 	}
 	// M6.1 Labor Market：服务市场 + 合约（最近 40 条）+ 累计统计（清晰口径）
 	snap.Services = w.laborMarketLocked()
-	stat := ContractStats{}
 	start := 0
 	if len(w.Contracts) > 40 {
 		start = len(w.Contracts) - 40
@@ -940,20 +953,15 @@ func (w *World) snapshotLocked() *PublicSnapshot {
 			CreatedAt: ct.CreatedAt.UnixMilli(),
 		})
 	}
-	// 累计统计基于全部合约（口径：累计值）
-	for _, ct := range w.Contracts {
-		stat.Total++
-		switch ct.Status {
-		case "completed":
-			stat.Completed++
-			stat.TotalVolume += ct.Price
-			stat.MoneyMoved += ct.Price
-		case "failed":
-			stat.Failed++
-		case "pending":
-			stat.Pending++
-		}
-	}
+	// 累计统计直接读增量计数器（O(1)，不再遍历全量 w.Contracts）。
+	// Pending = 进行中（working）= 总计 − 已完成 − 已失败。
+	stat := ContractStats{}
+	stat.Total = w.contractStatTotal
+	stat.Completed = w.contractStatCompleted
+	stat.Failed = w.contractStatFailed
+	stat.Pending = w.contractStatTotal - w.contractStatCompleted - w.contractStatFailed
+	stat.TotalVolume = w.contractStatVolume
+	stat.MoneyMoved = w.contractStatMoved
 	snap.ContractStats = stat
 	// 缓存本次快照：版本号未变时的重复请求直接复用
 	w.snapCache = snap

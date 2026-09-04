@@ -178,8 +178,15 @@ type World struct {
 	SkillBuys  []SkillBuy
 	// M6.1 Labor Market：可雇佣的服务 + 合约记录
 	Services  map[string]*Service // 服务市场（id → 服务定义，固定价格）
-	Contracts []*Contract         // 合约记录（谁雇佣谁/状态）
+	Contracts []*Contract         // 合约记录（谁雇佣谁/状态）；保留最近 maxContracts 条
 	nextContractID int64
+	// 合约累计统计（增量维护，避免每次 Snapshot 全量扫描 w.Contracts）。
+	// 裁剪 w.Contracts 不会重置这些计数器，历史统计始终准确。
+	contractStatTotal     int64
+	contractStatCompleted int64
+	contractStatFailed    int64
+	contractStatVolume    int64 // 累计成交额（completed 合约价）
+	contractStatMoved     int64 // 实际转移金额（worker 实收 = Escrow）
 	nextJobID  int64
 	nextTxID   int64
 	round      int

@@ -37,11 +37,22 @@ func CaptureSnapshot(d *gorm.DB) (bool, error) {
 	snap.FollowCount = countSince(d, &models.Follow{}, "created_at >= ?", dayStart)
 	snap.MemoryCount = countSince(d, &models.Memory{}, "created_at >= ?", dayStart)
 
-	// 关系分布（全量累计）
-	snap.RelFriend = countWhere(d, &models.Relationship{}, "type = ?", "friend")
-	snap.RelDisagree = countWhere(d, &models.Relationship{}, "type = ?", "disagree")
-	snap.RelFrequent = countWhere(d, &models.Relationship{}, "type = ?", "frequent_discuss")
-	snap.RelBlock = countWhere(d, &models.Relationship{}, "type = ?", "block")
+	// 关系分布（全量累计）：一次分组聚合算出所有类型，避免 4 次 COUNT
+	var relRows []struct {
+		Type  string
+		Total int64
+	}
+	if err := d.Model(&models.Relationship{}).Select("type, COUNT(*) as total").Group("type").Scan(&relRows).Error; err != nil {
+		return false, err
+	}
+	relByType := map[string]int64{}
+	for _, r := range relRows {
+		relByType[r.Type] = r.Total
+	}
+	snap.RelFriend = relByType["friend"]
+	snap.RelDisagree = relByType["disagree"]
+	snap.RelFrequent = relByType["frequent_discuss"]
+	snap.RelBlock = relByType["block"]
 	snap.CommunityCount = int(snap.RelFriend + snap.RelFrequent) // 关系边数作为社区密度近似
 
 	// 话题数（近似：按帖子内容前 20 字去重计数）

@@ -141,17 +141,27 @@ func GetAnalytics(d *gorm.DB) (*Analytics, error) {
 		})
 	}
 
-	// 每个 Agent 的行为画像
+	// 每个 Agent 的行为画像：一次性聚合，避免 N+1（原本每个 Agent 6 条 COUNT，
+	// 数百 Agent 时会变成上千条查询，分析页在"数据很多"时严重拖慢）。
+	postC := groupedCount(d, &models.Post{}, "agent_id")
+	commentC := groupedCount(d, &models.Comment{}, "agent_id")
+	likeC := groupedCount(d, &models.Like{}, "agent_id")
+	followC := groupedCount(d, &models.Follow{}, "agent_id")
+	memC := groupedCount(d, &models.Memory{}, "agent_id")
+	// 节流记录见 runtime.Think（Action = "skip"），此处与之一致（原先错写成 "nothing" 永远为 0）
+	skipC := groupedCountWhere(d, &models.AgentAction{}, "agent_id", "action = ?", "skip")
+
 	for _, ag := range agents {
-		st := AgentStat{ID: ag.ID, Name: ag.Name, Avatar: ag.Avatar, Kind: ag.Kind, UseLLM: ag.UseLLM, Goal: ag.Goal}
-		d.Model(&models.Post{}).Where("agent_id = ?", ag.ID).Count(&st.Posts)
-		d.Model(&models.Comment{}).Where("agent_id = ?", ag.ID).Count(&st.Comments)
-		d.Model(&models.Like{}).Where("agent_id = ?", ag.ID).Count(&st.Likes)
-		d.Model(&models.Follow{}).Where("agent_id = ?", ag.ID).Count(&st.Follows)
-		d.Model(&models.Memory{}).Where("agent_id = ?", ag.ID).Count(&st.Memories)
-		var skips int64
-		d.Model(&models.AgentAction{}).Where("agent_id = ? AND action = ?", ag.ID, "nothing").Count(&skips)
-		st.Skips = skips
+		st := AgentStat{
+			ID: ag.ID, Name: ag.Name, Avatar: ag.Avatar, Kind: ag.Kind,
+			UseLLM: ag.UseLLM, Goal: ag.Goal,
+			Posts:    postC[ag.ID],
+			Comments: commentC[ag.ID],
+			Likes:    likeC[ag.ID],
+			Follows:  followC[ag.ID],
+			Memories: memC[ag.ID],
+			Skips:    skipC[ag.ID],
+		}
 		st.TotalAction = st.Posts + st.Comments + st.Likes + st.Follows + st.Skips
 		a.Agents = append(a.Agents, st)
 	}
@@ -165,4 +175,36 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// groupedCount 按列分组聚合 COUNT(*)，返回 col -> 总数 的映射。
+// 一条查询即可算完所有 Agent 的某类统计，避免逐 Agent 循环查询（N+1）。
+func groupedCount(d *gorm.DB, model interface{}, col string) map[int64]int64 {
+	out := map[int64]int64{}
+	var rows []struct {
+		ID    int64
+		Total int64
+	}
+	if err := d.Model(model).Select(col + " as id, COUNT(*) as total").Group(col).Scan(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.ID] = r.Total
+	}
+	return out
+}
+
+func groupedCountWhere(d *gorm.DB, model interface{}, col, where string, args ...interface{}) map[int64]int64 {
+	out := map[int64]int64{}
+	var rows []struct {
+		ID    int64
+		Total int64
+	}
+	if err := d.Model(model).Select(col + " as id, COUNT(*) as total").Where(where, args...).Group(col).Scan(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.ID] = r.Total
+	}
+	return out
 }

@@ -552,24 +552,116 @@ func IsFollowing(d *gorm.DB, agentID, targetID int64) (bool, error) {
 
 // DeriveRelationships 全量扫描所有两两互动，按规则推导关系并落库（幂等）。
 // 适合启动/低峰时做一次全量收敛；运行时热更新走 DerivePairRelationship。
+//
+// 性能：原实现对每个 (a,b) 对都要做多轮 DB 查询（关注关系查询 + 双向评论计数），
+// 是 O(n²) 次查询。这里改为一次性把 follows / posts / comments / 已有关系载入内存，
+// 在 Go 里做 O(n²) 内存计算，DB 查询降到常数级（约 5 条）。
 func DeriveRelationships(d *gorm.DB) (int, error) {
 	agents, err := ListAgents(d, "")
 	if err != nil {
 		return 0, err
 	}
+
+	// 1) 关注关系：agentID -> 关注对象集合（用于判断双向关注 → friend）
+	follows := map[int64]map[int64]bool{}
+	var frows []struct {
+		AgentID int64
+		Target  int64
+	}
+	if err := d.Model(&models.Follow{}).Select("agent_id, target_agent_id").Scan(&frows).Error; err != nil {
+		return 0, err
+	}
+	for _, f := range frows {
+		if follows[f.AgentID] == nil {
+			follows[f.AgentID] = map[int64]bool{}
+		}
+		follows[f.AgentID][f.Target] = true
+	}
+
+	// 2) 帖子作者：postID -> agentID（用于把评论归因到被评论者）
+	postAuthor := map[int64]int64{}
+	var prows []struct {
+		ID     int64
+		Author int64
+	}
+	if err := d.Model(&models.Post{}).Select("id, agent_id").Scan(&prows).Error; err != nil {
+		return 0, err
+	}
+	for _, p := range prows {
+		postAuthor[p.ID] = p.Author
+	}
+
+	// 3) 评论互动：inter[a][b] = a 评论 b 的帖子的次数（用于判断 frequent_discuss）
+	inter := map[int64]map[int64]int64{}
+	var crows []struct {
+		PostID  int64
+		AgentID int64
+	}
+	if err := d.Model(&models.Comment{}).Select("post_id, agent_id").Scan(&crows).Error; err != nil {
+		return 0, err
+	}
+	for _, c := range crows {
+		author, ok := postAuthor[c.PostID]
+		if !ok {
+			continue
+		}
+		if inter[c.AgentID] == nil {
+			inter[c.AgentID] = map[int64]int64{}
+		}
+		inter[c.AgentID][author]++
+	}
+
+	// 4) 已有关系：用于对比是否发生变化（保持 updated 计数语义：按无序对、以 (i,j) 方向为基准）
+	existing := map[relPair]string{}
+	var rrows []struct {
+		AgentID int64
+		Target  int64
+		Type    string
+	}
+	if err := d.Model(&models.Relationship{}).Select("agent_id, target_id, type").Scan(&rrows).Error; err != nil {
+		return 0, err
+	}
+	for _, r := range rrows {
+		existing[relPair{a: r.AgentID, b: r.Target}] = r.Type
+	}
+
+	const minDiscuss = 3
 	updated := 0
 	for i := 0; i < len(agents); i++ {
 		for j := i + 1; j < len(agents); j++ {
-			before, _ := RelationshipType(d, agents[i].ID, agents[j].ID)
-			if err := DerivePairRelationship(d, agents[i].ID, agents[j].ID); err == nil {
-				after, _ := RelationshipType(d, agents[i].ID, agents[j].ID)
-				if before != after {
-					updated++
+			a, b := agents[i].ID, agents[j].ID
+			var desired string
+			// 双向关注 → friend
+			if follows[a] != nil && follows[a][b] && follows[b] != nil && follows[b][a] {
+				desired = RelFriend
+			} else {
+				// ab：b 评论 a 的帖子数；ba：a 评论 b 的帖子数
+				ab := inter[b][a]
+				ba := inter[a][b]
+				if ab >= minDiscuss && ba >= minDiscuss {
+					desired = RelFrequentDiscuss
 				}
+			}
+			if desired == "" {
+				continue
+			}
+			if existing[relPair{a: a, b: b}] != desired {
+				if err := SetRelationship(d, a, b, desired); err != nil {
+					return updated, err
+				}
+				if err := SetRelationship(d, b, a, desired); err != nil {
+					return updated, err
+				}
+				updated++
 			}
 		}
 	}
 	return updated, nil
+}
+
+// relPair 是无序关系对的键（用于内存去重/查找）。
+type relPair struct {
+	a, b int64
 }
 
 // RelationshipType 返回 agent 对 target 当前的关系类型；无则返回空串。
