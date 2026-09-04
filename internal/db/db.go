@@ -58,6 +58,9 @@ func migrate(d *gorm.DB) error {
 		&models.AgentSnapshot{},
 		&models.AgentMessage{},
 		&models.AgentCapability{},
+		&models.RealWorldJob{},
+		&models.RealWorldExecution{},
+		&models.RealWorldPayment{},
 	)
 }
 
