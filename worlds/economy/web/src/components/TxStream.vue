@@ -31,7 +31,9 @@ const scrollRef = ref()
 
 // 合并最近交易(快照) + 实时流
 const txList = computed<Transaction[]>(() => {
-  const fromStream: Transaction[] = props.txStream.map(ev => ({
+  const fromStream: Transaction[] = props.txStream
+    .filter(ev => ev.type === 'tx')
+    .map(ev => ({
     id: ev.data?.id ?? 0,
     time: new Date(ev.time).toISOString(),
     from: ev.data?.from ?? 0,

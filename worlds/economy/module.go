@@ -7,6 +7,7 @@ package economy
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -141,10 +142,16 @@ func (m *Module) WithRetriever(r ctxrt.Retriever) *Module {
 	return m
 }
 
+// enableContextObs 控制是否把 M8 Context Runtime 编译结果发布到观测总线。
+// 默认关闭：m8.context 事件量大（每 Agent 每轮一次，且体积大），会冲爆 SSE 与前端、
+// 把真实交易挤出事件流（表现为"交易流一直是 0"并可能引发卡死）。
+// 需要时设环境变量 ECO_CONTEXT_OBS=1 开启旁路观察。
+var enableContextObs = os.Getenv("ECO_CONTEXT_OBS") == "1"
+
 // observeContext M8：用现有 Perception + Planner 候选构造 ContextRequest，
 // 编译为 CompiledContext 并发布到 Observatory。这是最小集成，不改动任何决策逻辑。
 func (p *planner) observeContext(ctx context.Context, v *economy.Perception) {
-	if p.obs == nil {
+	if p.obs == nil || !enableContextObs {
 		return
 	}
 	// 1) DecisionIntent：从当前经济态势推断意图类型（仅用于 Context 分类，不影响决策）。

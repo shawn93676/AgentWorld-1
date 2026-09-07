@@ -66,8 +66,13 @@ export function useGame() {
   }
 
   function pushEvent(ev: ObsEvent) {
-    txStream.value.push(ev)
-    if (txStream.value.length > 200) txStream.value.splice(0, txStream.value.length - 200)
+    // 交易流只收真实资金事件（type==="tx"）。否则 m8.context / job.* / contract.* 等
+    // 大量非交易事件会被当成 amount:0 灌进列表，把真实交易挤出 60 条窗口，
+    // 表现为"交易流一直是 0"；同时这些事件会把 SSE 与前端冲爆导致卡死。
+    if (ev.type === 'tx') {
+      txStream.value.push(ev)
+      if (txStream.value.length > 200) txStream.value.splice(0, txStream.value.length - 200)
+    }
     // 某些事件后刷新快照（交易/工作/合约会让余额/价格/合约统计变化）
     if (['tx', 'job.done', 'trade.buy', 'trade.sell', 'skill.buy',
       'contract.created', 'contract.completed', 'contract.failed'].includes(ev.type)) {
