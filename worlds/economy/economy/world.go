@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"agentworld/internal/life"
 	"agentworld/internal/skill"
 	"agentworld/worlds/goosegame/goose"
 )
@@ -53,6 +54,8 @@ type Agent struct {
 	Reputation         int64 // 声誉分（0~100，越高越可信）
 	CompletedContracts int64 // 累计完成合约数
 	FailedContracts    int64 // 累计失败合约数
+	// M9 LifeState：alive/sleeping/traveling/dead/archived，跨世界携带（与 village 统一）。
+	Life life.LifeState
 }
 
 // SuccessRate 返回合约成功率（0~1）。

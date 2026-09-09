@@ -63,6 +63,11 @@ func NewFooAdapter(w *foo.World) *FooAdapter {
 }
 
 // 然后实现 7 个钩子。下面是只翻译 Skills 的极简版：
+
+// 关于稳定身份：每个 Agent 在“起源世界”被分配一个全局稳定的身份 `StableID(worldKey, local)`
+// （如 `"village:1"`），由 BaseAdapter 在 Seed/Enter 时记进 `idRev[local]`。导出时务必用
+// `BaseAdapter.StableIDOf(local)` 取出这个**携带不变**的身份，而不是按“当前世界 local”重算——
+// 后者会让身份随每次跨世界移动而变，破坏往返一致性。展示名仍走 `Identity.Name`。
 func (a *FooAdapter) WorldKey() string { return "foo" }
 func (a *FooAdapter) CanAccept(p life.AgentPortable) bool { return p.Identity.Name != "" }
 
@@ -79,8 +84,11 @@ func (a *FooAdapter) StoreAllocLocal() int64              { a.seq++; return a.se
 func (a *FooAdapter) ExportLocked(local int64, ag any) (life.AgentPortable, error) {
     x := ag.(*foo.Agent)
     p := life.AgentPortable{
-        AgentID:  x.Name,
-        Identity: life.PortableIdentity{ID: x.Name, Name: x.Name},
+        // AgentID / Identity.ID 用 BaseAdapter.StableIDOf(local)：携带不变的全局稳定身份
+        //（<worldKey>:<local>）。不要用 x.Name 重算——否则 Agent 每进一个新世界身份就变，
+        // 跨世界往返无法复用原点槽位，且两个世界都有同名 Agent 时还会互相覆盖。
+        AgentID:  a.BaseAdapter.StableIDOf(local),
+        Identity: life.PortableIdentity{ID: a.BaseAdapter.StableIDOf(local), Name: x.Name},
         Life:     life.PortableLife{State: a.BaseAdapter.StateOf(local)},
     }
     for k, v := range x.Skills { p.Skills = append(p.Skills, life.PortableSkill{Name: k, Level: v}) }
@@ -96,7 +104,8 @@ func (a *FooAdapter) ImportLocked(local int64, p life.AgentPortable) (any, error
 接好之后，跨世界搬运一行就够：
 
 ```go
-t, err := life.Move(villageAdapter, economyAdapter, "Marcus")
+// 注意：Move 的第三个参数是“全局稳定身份”（StableID），不是展示名。
+t, err := life.Move(villageAdapter, economyAdapter, life.StableID("village", 1))
 ```
 
 ## 4. 多世界自注册（可选但推荐）

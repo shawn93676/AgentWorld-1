@@ -38,7 +38,11 @@ func main() {
 	vw.SealRelations()
 	vadapter := village.NewVillageAdapter(vw)
 
-	before := mustPortable(vadapter, "Marcus")
+	// Marcus 在 Village 的本地 ID 是 1（见上方 Attach(1, ...)），其全局稳定身份为 "village:1"。
+	// 跨世界移动一律用稳定 ID 寻址，避免两个世界都有 "Marcus" 时在本世界 Enter 互相覆盖。
+	marcusStable := life.StableID("village", 1)
+
+	before := mustPortable(vadapter, marcusStable)
 	fmt.Println("=== 出发前（Village）===")
 	printPortable(before)
 
@@ -58,8 +62,8 @@ func main() {
 	// 硬编码 Energy=100/Mood=0），所以这里给每个 adapter 喂符合其自身契约的样本，
 	// 而不是用同一个样本跑 SelfTestAll（那只适用于共享同一份 portable 契约的世界）。
 	if err := vadapter.SelfTest(life.AgentPortable{
-		AgentID:  "Marcus",
-		Identity: life.PortableIdentity{ID: "Marcus", Name: "Marcus", Occupation: "Blacksmith"},
+		AgentID:  life.StableID("village", 1),
+		Identity: life.PortableIdentity{ID: life.StableID("village", 1), Name: "Marcus", Occupation: "Blacksmith"},
 		Personality: life.PortablePersonality{Traits: []string{"hardworking"}},
 		Skills:   []life.PortableSkill{{Name: "blacksmith", Level: 5}},
 		Life:     life.PortableLife{State: life.LifeAlive, Energy: 70, Mood: 20},
@@ -67,8 +71,8 @@ func main() {
 		panic(fmt.Sprintf("village SelfTest: %v", err))
 	}
 	if err := eadapter.SelfTest(life.AgentPortable{
-		AgentID:  "Marcus",
-		Identity: life.PortableIdentity{ID: "Marcus", Name: "Marcus", Occupation: "Blacksmith"},
+		AgentID:  life.StableID("economy", 1),
+		Identity: life.PortableIdentity{ID: life.StableID("economy", 1), Name: "Marcus", Occupation: "Blacksmith"},
 		Personality: life.PortablePersonality{Traits: []string{"hardworking"}},
 		Skills:   []life.PortableSkill{{Name: "blacksmith", Level: 5}},
 		Life:     life.PortableLife{State: life.LifeAlive, Energy: 100, Mood: 0},
@@ -78,33 +82,33 @@ func main() {
 	fmt.Println("=== SelfTest: village & economy 往返校验通过 ===")
 
 	// Marcus 自己产生目标：“去 Economy World 工作” → 跨 World 移动
-	t1, err := reg.MoveByKey("village", "economy", "Marcus")
+	t1, err := reg.MoveByKey("village", "economy", marcusStable)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("\n=== Move Village→Economy: %s ===\n", t1.Status)
 
 	// ---- 3. 在 Economy 工作 / 赚钱（真实调用经济世界接口） ----
-	mid, _ := eadapter.LocalID("Marcus")
+	mid, _ := eadapter.LocalID(marcusStable)
 	ea := ew.Agent(mid)
 	ew.Transfer(0, ea.ID, 120, "job-reward", "Worked as a smith for a day")
 	ea.UpgradeSkill("blacksmith") // Lv5 → Lv6：技能随工作演化
 	fmt.Printf("Economy 内 Marcus: Balance=%d, Skills=%v\n", ea.Balance, ea.Skills)
 
 	// 记录“在 Economy 工作”的跨世界经历（经济世界原生无记忆字段，由 adapter carry 携带）
-	eadapter.NoteExperience("Marcus", life.PortableMemory{
+	eadapter.NoteExperience(marcusStable, life.PortableMemory{
 		Day: 1, Minute: 0, Text: "Worked in the Economy World and earned 120 gold as a smith.", Imp: 5,
 	})
 
 	// ---- 4. 带着“人生”回到 Village ----
-	t2, err := reg.MoveByKey("economy", "village", "Marcus")
+	t2, err := reg.MoveByKey("economy", "village", marcusStable)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("=== Move Economy→Village: %s ===\n", t2.Status)
 
 	// ---- 5. 证明“还是 Marcus，但带着新经历” ----
-	after := mustPortable(vadapter, "Marcus")
+	after := mustPortable(vadapter, marcusStable)
 	fmt.Println("\n=== 回家后（Village）===")
 	printPortable(after)
 
@@ -113,6 +117,7 @@ func main() {
 		after.Identity.Name == before.Identity.Name &&
 		len(after.Memories) > len(before.Memories)
 	fmt.Printf("身份连续(Marcus): %v\n", after.AgentID == before.AgentID)
+	fmt.Printf("稳定身份(%s 不变): %v\n", marcusStable, after.AgentID == marcusStable)
 	fmt.Printf("技能演化(铁匠 Lv5→Lv%d): %v\n", skillLevelOf(after), after.Skills[0].Level > before.Skills[0].Level)
 	fmt.Printf("记忆增长(带新经历): %v (%d -> %d)\n",
 		len(after.Memories) > len(before.Memories), len(before.Memories), len(after.Memories))

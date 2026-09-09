@@ -109,15 +109,16 @@ func (a *EconomyAdapter) cleanup(local int64) {
 
 // exportAgent: economy.Agent + carry -> AgentPortable（调用时已持 b.mu 与 carryMu）。
 func (a *EconomyAdapter) exportAgent(local int64, ag *Agent) life.AgentPortable {
+	pid := a.BaseAdapter.StableIDOf(local) // 携带不变的全局稳定身份（非按当前世界 local 重算）
 	p := life.AgentPortable{
-		AgentID: ag.Name,
+		AgentID: pid,
 		Identity: life.PortableIdentity{
-			ID:         ag.Name,
+			ID:         pid,
 			Name:       ag.Name,
 			Occupation: ag.Profession,
 		},
 		Personality: life.PortablePersonality{Traits: splitTraits(ag.Personality), Goal: ag.Goal},
-		Life:        life.PortableLife{State: a.BaseAdapter.StateOf(ag.ID), Energy: 100, Mood: 0},
+		Life:        life.PortableLife{State: ag.Life, Energy: 100, Mood: 0},
 	}
 	for _, s := range ag.Skills {
 		p.Skills = append(p.Skills, life.PortableSkill{Name: s.SkillID, Level: s.Level})
@@ -147,6 +148,10 @@ func (a *EconomyAdapter) importAgent(local int64, p life.AgentPortable) *Agent {
 			balance += asset.Qty
 		}
 	}
+	st := p.Life.State
+	if st == "" {
+		st = life.LifeAlive
+	}
 	ag := &Agent{
 		ID:            local,
 		Name:          p.Identity.Name,
@@ -157,6 +162,7 @@ func (a *EconomyAdapter) importAgent(local int64, p life.AgentPortable) *Agent {
 		Balance:       balance,
 		Inventory:     map[string]int{},
 		Skills:        skills,
+		Life:          st,
 		Relationships: map[int64]float64{},
 	}
 	// 经济世界原生不能表达的部分：存入 carry，离场时随 AgentPortable 带出。

@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +32,28 @@ var ErrNoTransporter = errors.New("life: nil transporter")
 // AgentID 全局稳定身份（跨 World 不变）。仅作语义标记；具体承载由 internal/agent 的
 // models.Agent.World 字段完成（Agent 已可跨 World 存在）。
 type AgentID = string
+
+// StableID 构造全局稳定的 Agent 身份：<worldKey>:<local>。
+// 用“起源世界 + 本地 ID”而非展示名，避免两个世界各有同名 Agent（如都叫 "Marcus"）
+// 时在本世界 Enter 时被互相覆盖。展示名仍走 AgentPortable.Identity.Name。
+// 注意：local 取“该 Agent 在起源世界的本地 ID”，因此同一 Agent 离场再入场时
+// 稳定 ID 保持不变，跨世界往返可正确还原。
+func StableID(worldKey string, local int64) AgentID {
+	return AgentID(worldKey + ":" + strconv.FormatInt(local, 10))
+}
+
+// ParseStableID 反向解析 StableID，返回起源世界与本地 ID。
+func ParseStableID(id AgentID) (worldKey string, local int64, err error) {
+	parts := strings.SplitN(string(id), ":", 2)
+	if len(parts) != 2 {
+		return "", 0, fmt.Errorf("life: invalid stable id %q", id)
+	}
+	local, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return "", 0, fmt.Errorf("life: invalid stable id %q: %w", id, err)
+	}
+	return parts[0], local, nil
+}
 
 // LifeState Agent 的生命周期状态（M9 §lifecycle）。现有框架只有 models.Agent.Status
 // ("running")，没有休眠/旅行/死亡/归档语义；这是本包补充的核心类型。
@@ -264,6 +288,7 @@ type BaseAdapter struct {
 
 	idMap  map[string]int64
 	revMap map[int64]string
+	idRev  map[int64]AgentID // local -> 全局稳定身份（跨世界携带不变）
 	state  map[int64]LifeState
 }
 
@@ -272,10 +297,13 @@ func (b *BaseAdapter) Init(core PortableCore) {
 	b.core = core
 	b.idMap = map[string]int64{}
 	b.revMap = map[int64]string{}
+	b.idRev = map[int64]AgentID{}
 	b.state = map[int64]LifeState{}
 	for name, local := range core.SeedNames() {
-		b.idMap[name] = local
+		stable := StableID(core.WorldKey(), local)
+		b.idMap[string(stable)] = local
 		b.revMap[local] = name
+		b.idRev[local] = stable
 		b.state[local] = LifeAlive
 	}
 }
@@ -283,8 +311,13 @@ func (b *BaseAdapter) Init(core PortableCore) {
 // StateOf 返回本地 Agent 的生命状态。调用方必须已持有 b.mu。
 func (b *BaseAdapter) StateOf(local int64) LifeState { return b.state[local] }
 
-// NameOf 返回本地 ID 对应的稳定名。调用方必须已持有 b.mu。
+// NameOf 返回本地 ID 对应的展示名。调用方必须已持有 b.mu。
 func (b *BaseAdapter) NameOf(local int64) string { return b.revMap[local] }
+
+// StableIDOf 返回本地 Agent 的全局稳定身份（跨世界携带不变，由 Seed/Enter 设置）。
+// 调用方必须已持有 b.mu。adapter 在 ExportLocked 中应优先用它，而不是按“当前世界 local”
+// 重算——否则 Agent 每进入一个新世界，其稳定身份就会变，跨世界往返无法复用原点槽位。
+func (b *BaseAdapter) StableIDOf(local int64) AgentID { return b.idRev[local] }
 
 // LocalID 返回某稳定 ID 在本世界的本地 int64（供 harness / 外部定位 Agent）。
 func (b *BaseAdapter) LocalID(pid AgentID) (int64, bool) {
@@ -337,7 +370,8 @@ func (b *BaseAdapter) Enter(p AgentPortable) error {
 		local = b.core.StoreAllocLocal()
 		b.idMap[p.AgentID] = local
 	}
-	b.revMap[local] = p.AgentID
+	b.revMap[local] = p.Identity.Name // 展示名（本地回查用）
+	b.idRev[local] = p.AgentID         // 稳定身份（跨世界携带不变）
 	ag, err := b.core.ImportLocked(local, p)
 	if err != nil {
 		return err
@@ -372,6 +406,7 @@ func (b *BaseAdapter) SelfTest(p AgentPortable) error {
 	local := b.core.StoreAllocLocal()
 	b.idMap[p.AgentID] = local
 	b.revMap[local] = p.AgentID
+	b.idRev[local] = p.AgentID
 	st := p.Life.State
 	if st == "" {
 		st = LifeAlive
@@ -384,6 +419,7 @@ func (b *BaseAdapter) SelfTest(p AgentPortable) error {
 			delete(b.idMap, p.AgentID)
 		}
 		delete(b.revMap, local)
+		delete(b.idRev, local)
 		delete(b.state, local)
 		if c, ok := b.core.(cleaner); ok {
 			c.cleanup(local)
@@ -398,6 +434,7 @@ func (b *BaseAdapter) SelfTest(p AgentPortable) error {
 		return fmt.Errorf("%s: SelfTest export: %w", b.core.WorldKey(), err)
 	}
 	out.AgentID = p.AgentID // 归一化稳定 ID 后再比较
+	out.Identity.ID = p.Identity.ID // adapter 可能把 ID 归一化为稳定身份，同样归一化
 	if !portableEqual(p, out) {
 		return fmt.Errorf("%s: SelfTest round-trip mismatch\n  in : %+v\n  out: %+v", b.core.WorldKey(), p, out)
 	}
@@ -464,6 +501,11 @@ func (r *Registry) MoveByKey(fromKey, toKey, id string) (Transition, error) {
 
 // SelfTestAll 对注册中心内每个 adapter 跑一次给定 sample 的往返校验，返回所有错误。
 // sample 通常取“本世界一个代表性 Agent 的 AgentPortable”。未实现 SelfTest 的 adapter 会被跳过。
+//
+// 注意：sample 会被同一个 AgentPortable 喂给所有已注册世界。若各世界的便携契约不同
+// （例如 village 携带 Energy/Mood、economy 导出时硬编码 Energy=100/Mood=0），共享样本
+// 必然在某些世界上往返不一致而失败。此时应改用各 adapter 独立的 SelfTest，传入符合
+// 各自契约的样本（见 internal/life/README.md 第 4 节与 experiments/m9）。
 func (r *Registry) SelfTestAll(sample AgentPortable) []error {
 	r.mu.Lock()
 	adapters := make([]PortableAdapter, 0, len(r.adapters))

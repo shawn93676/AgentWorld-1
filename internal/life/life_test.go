@@ -53,9 +53,10 @@ func (m *mockCore) StoreAllocLocal() int64 {
 }
 func (m *mockCore) ExportLocked(local int64, ag any) (life.AgentPortable, error) {
 	a := ag.(mockAgent)
+	pid := m.BaseAdapter.StableIDOf(local) // 携带不变的全局稳定身份
 	p := life.AgentPortable{
-		AgentID:  a.name,
-		Identity: life.PortableIdentity{ID: a.name, Name: a.name},
+		AgentID:  pid,
+		Identity: life.PortableIdentity{ID: pid, Name: a.name},
 		Life:     life.PortableLife{State: m.BaseAdapter.StateOf(local)},
 	}
 	for k, v := range a.skills {
@@ -86,38 +87,29 @@ func TestSelfTestRoundTrip(t *testing.T) {
 
 func TestMoveRoundTrip(t *testing.T) {
 	a := newMock()
+	// 预置 Marcus（local 1），模拟 Init 用稳定身份建索引：idMap["mock:1"]=1
+	a.store[1] = mockAgent{name: "Marcus", skills: map[string]int{"blacksmith": 5}}
+	a.BaseAdapter.Init(a) // 重建索引以纳入种子 Agent
 	b := newMock()
-	sample := life.AgentPortable{
-		AgentID:  "Marcus",
-		Identity: life.PortableIdentity{ID: "Marcus", Name: "Marcus"},
-		Skills:   []life.PortableSkill{{Name: "blacksmith", Level: 5}},
-		Life:     life.PortableLife{State: life.LifeAlive},
-	}
-	// Marcus 先进入世界 A
-	if err := a.Enter(sample); err != nil {
-		t.Fatalf("enter A: %v", err)
-	}
-	la, ok := a.LocalID("Marcus")
-	if !ok {
-		t.Fatal("Marcus not in A")
-	}
+	pid := life.StableID("mock", 1) // Marcus 的全局稳定身份：<world>:<local>
+
 	// A → B
-	t1, err := life.Move(a, b, "Marcus")
+	t1, err := life.Move(a, b, pid)
 	if err != nil || t1.Status != life.TransitionCompleted {
 		t.Fatalf("move A→B failed: %v %s", err, t1.Status)
 	}
-	if _, ok := a.StoreGet(la); ok {
-		t.Fatal("Marcus should have left A's store (id 映射保留以便回村复用本地槽位)")
+	if _, ok := a.StoreGet(1); ok {
+		t.Fatal("Marcus should have left A's store")
 	}
-	if _, ok := b.LocalID("Marcus"); !ok {
+	if _, ok := b.LocalID(pid); !ok {
 		t.Fatal("Marcus should be in B")
 	}
-	// B → A：Marcus 回村，复用原本地槽位 la
-	t2, err := life.Move(b, a, "Marcus")
+	// B → A：Marcus 回村，复用原本地槽位 1
+	t2, err := life.Move(b, a, pid)
 	if err != nil || t2.Status != life.TransitionCompleted {
 		t.Fatalf("move B→A failed: %v %s", err, t2.Status)
 	}
-	if _, ok := a.StoreGet(la); !ok {
+	if _, ok := a.StoreGet(1); !ok {
 		t.Fatal("Marcus should be back in A's store")
 	}
 }

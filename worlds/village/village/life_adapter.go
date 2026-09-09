@@ -1,8 +1,6 @@
 package village
 
 import (
-	"strconv"
-
 	"agentworld/internal/life"
 )
 
@@ -90,7 +88,7 @@ func (a *VillageAdapter) StoreAllocLocal() int64 {
 }
 
 func (a *VillageAdapter) ExportLocked(local int64, ag any) (life.AgentPortable, error) {
-	return a.exportAgent(ag.(*Agent)), nil
+	return a.exportAgent(local, ag.(*Agent)), nil
 }
 
 func (a *VillageAdapter) ImportLocked(local int64, p life.AgentPortable) (any, error) {
@@ -99,16 +97,17 @@ func (a *VillageAdapter) ImportLocked(local int64, p life.AgentPortable) (any, e
 
 // ---- 世界特定的纯翻译 ----
 
-// exportAgent: village.Agent -> AgentPortable（调用时已持 b.mu，可用 NameOf）。
-func (a *VillageAdapter) exportAgent(ag *Agent) life.AgentPortable {
+// exportAgent: village.Agent -> AgentPortable（调用时已持 b.mu）。
+func (a *VillageAdapter) exportAgent(local int64, ag *Agent) life.AgentPortable {
 	st := ag.Life
 	if st == "" {
 		st = life.LifeAlive // 默认在世
 	}
+	pid := a.BaseAdapter.StableIDOf(local) // 携带不变的全局稳定身份（非按当前世界 local 重算）
 	p := life.AgentPortable{
-		AgentID: ag.Name,
+		AgentID: pid,
 		Identity: life.PortableIdentity{
-			ID:         ag.Name,
+			ID:         pid,
 			Name:       ag.Name,
 			Occupation: ag.Occupation,
 			Emoji:      ag.Emoji,
@@ -123,12 +122,8 @@ func (a *VillageAdapter) exportAgent(ag *Agent) life.AgentPortable {
 		p.Skills = append(p.Skills, life.PortableSkill{Name: k, Level: v})
 	}
 	for tid, rel := range ag.Rel {
-		name := a.BaseAdapter.NameOf(tid)
-		if name == "" {
-			name = strconv.FormatInt(tid, 10)
-		}
 		p.Relationships = append(p.Relationships, life.PortableRelationship{
-			TargetID: name, Like: rel.Like, Trust: rel.Trust,
+			TargetID: life.StableID(a.WorldKey(), tid), Like: rel.Like, Trust: rel.Trust,
 		})
 	}
 	for _, m := range ag.Mem {
