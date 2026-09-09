@@ -134,3 +134,45 @@ func (c *Client) Decide(ctx context.Context, system, user string) (*Decision, er
 	}
 	return &dec, nil
 }
+
+// ChatText 纯文本对话：不使用 response_format，直接返回模型回复原文。
+// 供玩家聊天这类需要自然语言（而非结构化决策）的场景；推理模型
+// （先输出 reasoning_content 的）在 JSON 模式下会 400 或截断，此方法同样绕开。
+func (c *Client) ChatText(ctx context.Context, system, user string) (string, error) {
+	if !c.Enabled() {
+		return "", fmt.Errorf("llm not configured")
+	}
+	b, err := json.Marshal(map[string]interface{}{
+		"model":       c.model,
+		"messages":    []chatMsg{{Role: "system", Content: system}, {Role: "user", Content: user}},
+		"temperature": 0.9,
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	hc := &http.Client{Timeout: 300 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var cr chatResp
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return "", err
+	}
+	if len(cr.Choices) == 0 {
+		return "", fmt.Errorf("llm empty choices")
+	}
+	return strings.TrimSpace(cr.Choices[0].Message.Content), nil
+}
