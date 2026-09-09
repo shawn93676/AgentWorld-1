@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Agent Village · Willow Creek</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+body { background:#e8e0d5; display:flex; justify-content:center; align-items:center; min-height:100vh; padding:12px; }
+.phone { max-width:390px; width:100%; height:800px; background:#f3ecdf; border-radius:40px;
+  box-shadow:0 20px 60px rgba(0,0,0,.2), 0 0 0 8px #f0ebe4; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+.status-bar { padding:12px 20px 4px; display:flex; justify-content:space-between; font-size:12px; font-weight:600; color:#3a2c1b; background:#fcf7f0; flex-shrink:0; }
+.header { padding:2px 16px 10px; background:#fcf7f0; border-bottom:1px solid #ede5d9; flex-shrink:0; }
+.header .title-row { display:flex; align-items:center; justify-content:space-between; }
+.header h1 { font-size:17px; color:#2d2419; }
+.header h1 small { font-weight:500; color:#7a6a58; font-size:12px; }
+.conn { width:8px; height:8px; border-radius:50%; background:#d4a373; display:inline-block; margin-right:5px; }
+.conn.on { background:#3a7a5a; } .conn.err { background:#c44536; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.chip { background:#ede5d9; padding:3px 10px; border-radius:30px; font-size:11px; color:#4d3a27; }
+.chip b { color:#c44536; }
+.main-content { flex:1; overflow-y:auto; padding:10px 14px 14px; scroll-behavior:smooth; }
+.main-content::-webkit-scrollbar { width:3px; }
+.main-content::-webkit-scrollbar-thumb { background:#d4c5b2; border-radius:10px; }
+.screen { display:none; } .screen.active { display:block; }
+.tab-bar { display:flex; background:#fcf7f0; border-top:1px solid #ede5d9; flex-shrink:0; padding:6px 12px 12px; justify-content:space-around; }
+.tab-item { display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:#9a8b7a; font-weight:500;
+  padding:4px 16px; border-radius:20px; cursor:pointer; background:transparent; border:none; flex:1; max-width:80px; }
+.tab-item .tab-icon { font-size:20px; line-height:1.2; }
+.tab-item.active { color:#5c3d2e; background:#ede5d9; font-weight:600; }
+
+/* map */
+.map-card { background:#fcf7f0; border:1px solid #ede5d9; border-radius:18px; padding:10px 6px 4px; }
+.map-card svg { width:100%; display:block; }
+/* village 屏：上方线程/回响可滚动，地图始终完整可见 */
+#screenVillage.active { display:flex; flex-direction:column; }
+.village-top { flex-shrink:0; max-height:42%; overflow-y:auto; }
+#screenVillage .map-card { flex:1 1 auto; min-height:200px; display:flex; flex-direction:column; }
+#screenVillage .map-card svg { flex:1 1 auto; width:100%; min-height:0; }
+.place-name { font-size:9px; fill:#6b5b4b; font-weight:600; text-anchor:middle; }
+.place-circle { fill:#f5efe8; stroke:#d4c5b2; stroke-width:1; }
+.edge { stroke:#d6c9b8; stroke-width:1.5; stroke-dasharray:3 4; }
+.adot { cursor:pointer; }
+.adot circle.body { stroke:#fcf7f0; stroke-width:1.5; }
+.adot text { font-size:9px; text-anchor:middle; pointer-events:none; }
+.adot.traveling circle.body { stroke:#c98a3d; stroke-width:2; animation:pulse 1.2s infinite; }
+@keyframes pulse { 0%,100%{ opacity:1;} 50%{ opacity:.55;} }
+
+/* threads（悬念：离开时留下的未决之事） */
+.thread-head { font-size:12px; color:#8a6d3b; font-weight:700; letter-spacing:.3px; margin:2px 0 8px; }
+.thread-card { background:linear-gradient(180deg,#fff8e8,#fcf7f0); border:1px solid #e5d3ae; border-radius:16px;
+  padding:12px 14px; margin-bottom:9px; box-shadow:0 2px 10px rgba(180,140,60,.12); }
+.thread-card .th-top { display:flex; align-items:center; justify-content:space-between; font-size:10.5px; color:#8a6d3b; font-weight:700; }
+.thread-card .th-title { font-size:13.5px; color:#2d2419; margin:5px 0 3px; line-height:1.4; font-weight:600; }
+.thread-card .th-detail { font-size:12px; color:#7a6a58; line-height:1.4; }
+.thread-opts { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+.thread-opts button { flex:1; min-width:82px; padding:9px 8px; border-radius:20px; border:1px solid #d9c39a; background:#fff;
+  color:#5c3d2e; font-size:12.5px; font-weight:600; cursor:pointer; }
+.thread-opts button:active { transform:scale(.96); }
+.thread-opts button.primary { background:#5c3d2e; color:#fff; border-color:#5c3d2e; }
+.thread-opts button:disabled { opacity:.5; cursor:default; }
+.thread-done { background:#f5efe8; border:1px solid #ede5d9; border-radius:14px; padding:9px 12px; margin-bottom:8px; }
+.thread-done .th-outcome { font-size:12.5px; color:#4d3a27; line-height:1.4; }
+.thread-done .th-choice { font-size:11px; color:#9a8b7a; margin-top:3px; }
+.thread-empty { text-align:center; color:#9a8b7a; font-size:12.5px; padding:12px 10px 14px; }
+
+/* people */
+.section-title { font-size:16px; font-weight:700; color:#2d2419; margin:2px 0 10px; }
+.people-card { background:#fcf7f0; border:1px solid #ede5d9; border-radius:16px; padding:10px 12px; margin-bottom:8px;
+  display:flex; align-items:center; gap:12px; cursor:pointer; transition:background .1s; }
+.people-card:active { background:#f5eee6; }
+.people-card.gone { opacity:.55; filter:grayscale(.6); cursor:default; }
+.people-card.gone:active { background:#fcf7f0; }
+.people-avatar { width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0; color:#fff; }
+.people-info { flex:1; min-width:0; }
+.people-info .name { font-weight:600; font-size:14px; color:#2d2419; }
+.people-info .occupation { font-size:12px; color:#9a8b7a; }
+.people-info .status { font-size:12px; color:#6b5b4b; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.people-card .badge { font-size:18px; }
+
+/* story */
+.story-date { font-size:18px; font-weight:700; color:#2d2419; }
+.story-sub { color:#7a6a58; font-size:13px; margin:4px 0 12px; }
+.day-nav { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.day-nav button { background:#ede5d9; border:none; border-radius:20px; padding:6px 14px; font-weight:600; color:#5c3d2e; cursor:pointer; }
+.day-nav button:disabled { opacity:.35; cursor:default; }
+.day-nav .day-label { font-weight:700; color:#2d2419; font-size:14px; flex:1; text-align:center; }
+.story-item { background:#fcf7f0; border-radius:14px; padding:10px 14px; margin-bottom:8px; border:1px solid #ede5d9;
+  border-left-width:4px; cursor:pointer; transition:background .1s; }
+.story-item:active { background:#f5eee6; }
+.story-item.fresh { animation:flashIn 1.2s ease-out; }
+@keyframes flashIn { 0%{ background:#f3e3c8; } 100%{ background:#fcf7f0; } }
+.story-item .time { font-size:11px; font-weight:700; color:#7a6a58; letter-spacing:.3px; }
+.story-item .desc { font-size:13.5px; color:#2d2419; margin-top:2px; line-height:1.35; }
+.story-item .reason { display:none; font-size:12px; color:#6b5b4b; background:#f5efe8; padding:8px 10px; border-radius:10px; margin-top:8px; border-left:2px solid #b5838d; }
+.story-item.expanded .reason { display:block; }
+.story-item .expand-hint { font-size:11px; color:#9a8b7a; margin-top:4px; }
+.empty-tip { text-align:center; color:#9a8b7a; font-size:13px; padding:30px 10px; }
+
+/* me */
+.profile-card { background:#fcf7f0; border-radius:24px; padding:22px; border:1px solid #ede5d9; text-align:center; margin-bottom:14px; }
+.profile-card .avatar-big { width:68px; height:68px; border-radius:50%; background:#d4c5b2; margin:0 auto 10px; display:flex; align-items:center; justify-content:center; font-size:30px; }
+.profile-card .name { font-size:19px; font-weight:700; color:#2d2419; }
+.profile-card .gold { font-size:14px; color:#7a6a58; margin-top:4px; }
+.profile-card .gold strong { color:#c44536; font-size:18px; }
+.stat-row { display:flex; gap:8px; margin-top:12px; }
+.stat-box { flex:1; background:#f5efe8; border-radius:12px; padding:8px 4px; }
+.stat-box .v { font-weight:700; color:#2d2419; font-size:15px; }
+.stat-box .k { font-size:10px; color:#9a8b7a; margin-top:2px; }
+.settings-item { background:#fcf7f0; padding:14px 16px; border-radius:14px; border:1px solid #ede5d9; display:flex;
+  justify-content:space-between; align-items:center; margin-bottom:8px; }
+.settings-item .label { font-weight:500; color:#2d2419; font-size:14px; }
+.settings-item .value { color:#7a6a58; font-size:13px; }
+.speed-row { display:flex; gap:6px; }
+.speed-row button { background:#ede5d9; border:none; border-radius:20px; padding:7px 10px; font-size:11px; font-weight:600; color:#5c3d2e; cursor:pointer; }
+.speed-row button.on { background:#5c3d2e; color:#fff; }
+
+/* modal */
+.modal-overlay { display:none; position:absolute; inset:0; background:rgba(30,22,16,.6); z-index:100; border-radius:40px; padding:26px 12px 16px; align-items:flex-end; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal-card { background:#fcf7f0; width:100%; max-height:92%; border-radius:28px; padding:20px 18px 24px;
+  box-shadow:0 20px 60px rgba(0,0,0,.4); overflow-y:auto; animation:slideUp .25s ease-out; }
+@keyframes slideUp { 0%{ opacity:0; transform:translateY(40px);} 100%{ opacity:1; transform:translateY(0);} }
+.modal-card .close-btn { float:right; background:none; border:none; font-size:22px; color:#7a6a58; cursor:pointer; padding:0 4px; }
+.agent-header { display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+.big-avatar { width:56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:26px; color:#fff; flex-shrink:0; }
+.agent-header h2 { font-size:19px; color:#2d2419; }
+.agent-header .sub { color:#7a6a58; font-size:13px; }
+.agent-header .traits { margin-top:2px; }
+.agent-header .traits span { display:inline-block; background:#ede5d9; color:#6b5b4b; font-size:10px; border-radius:10px; padding:1px 7px; margin-right:3px; }
+.detail-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #ede5d9; font-size:13.5px; }
+.detail-row .label { color:#7a6a58; } .detail-row .value { font-weight:500; color:#2d2419; text-align:right; }
+.modal-sec { margin-top:14px; font-weight:600; color:#2d2419; font-size:14px; }
+.relation-bar { display:flex; align-items:center; gap:8px; margin:5px 0; }
+.relation-bar .name { width:64px; font-size:12.5px; font-weight:500; color:#4d3a27; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bar-bg { flex:1; height:6px; background:#ede5d9; border-radius:10px; overflow:hidden; }
+.bar-fill { height:100%; border-radius:10px; background:#d4a373; }
+.bar-fill.high { background:#c44536; } .bar-fill.mid { background:#d4a373; }
+.relation-bar .num { font-size:11px; color:#7a6a58; min-width:52px; text-align:right; }
+.mem-item { font-size:12.5px; color:#4d3a27; margin:4px 0; line-height:1.35; }
+.mem-item .d { color:#9a8b7a; font-size:10.5px; margin-right:4px; }
+.ev-line { font-size:12px; color:#4d3a27; margin:3px 0; }
+.ev-line .t { color:#9a8b7a; font-size:10.5px; margin-right:4px; }
+.action-buttons { display:flex; gap:8px; margin-top:16px; }
+.action-buttons button { flex:1; padding:11px; border-radius:26px; border:none; font-weight:600; font-size:13px; cursor:pointer; background:#ede5d9; color:#3a2c1b; }
+.action-buttons button:active { transform:scale(.96); }
+.action-buttons button.primary { background:#5c3d2e; color:#fff; }
+.panel { background:#f5efe8; border-radius:14px; padding:12px; margin-top:12px; font-size:13.5px; }
+.input-row { display:flex; gap:6px; margin-top:8px; }
+.input-row input { flex:1; min-width:0; border:1px solid #d4c5b2; border-radius:20px; padding:9px 12px; font-size:13px; background:#fff; color:#2d2419; outline:none; }
+.input-row button { background:#5c3d2e; color:#fff; border:none; border-radius:20px; padding:0 16px; font-weight:600; cursor:pointer; }
+.chip-row { display:flex; gap:6px; margin-top:8px; }
+.chip-row .amt { background:#fff; border:1px solid #d4c5b2; border-radius:16px; padding:5px 12px; font-size:12px; cursor:pointer; color:#5c3d2e; font-weight:600; }
+.bubble { max-width:82%; padding:8px 12px; border-radius:14px; margin:4px 0; font-size:13px; line-height:1.4; }
+.bubble.me { background:#5c3d2e; color:#fff; margin-left:auto; }
+.bubble.them { background:#fff; border:1px solid #ede5d9; color:#2d2419; }
+.chat-box { max-height:180px; overflow-y:auto; display:flex; flex-direction:column; }
+.action-note { font-size:11px; color:#7a6a58; margin-top:6px; }
+.verdict { font-size:13px; font-weight:600; margin-top:4px; }
+.verdict.ok { color:#3a7a5a; } .verdict.no { color:#b3543f; }
+
+/* toast */
+.toasts { position:absolute; bottom:76px; left:12px; right:12px; z-index:200; pointer-events:none; }
+.toast { background:rgba(45,36,25,.92); color:#fcf7f0; border-radius:14px; padding:10px 14px; margin-top:6px; font-size:12.5px;
+  display:flex; gap:8px; align-items:center; animation:slideUp .25s ease-out; box-shadow:0 6px 20px rgba(0,0,0,.3); }
+@media (max-width:420px){ .phone { border-radius:0; height:100vh; box-shadow:none; } .modal-overlay { border-radius:0; } body { padding:0; } }
+
+/* ---------- cool entry splash ---------- */
+.intro { position:absolute; inset:0; z-index:300; display:flex; align-items:center; justify-content:center;
+  border-radius:40px; overflow:hidden; opacity:0; visibility:hidden; pointer-events:none;
+  transition:opacity .5s ease, visibility .5s ease; }
+.intro.show { opacity:1; visibility:visible; pointer-events:auto; }
+.intro-bg { position:absolute; inset:0; background:
+  radial-gradient(130% 95% at 50% -12%, #fbeed0 0%, #eccfa3 38%, #c8a372 74%, #7d5c3c 100%); }
+.intro-bg::after { content:""; position:absolute; left:0; right:0; bottom:0; height:46%;
+  background:radial-gradient(80% 100% at 50% 100%, rgba(255,244,214,.55), transparent); }
+.intro-inner { position:relative; text-align:center; padding:0 28px; max-width:330px; color:#33271a;
+  animation:introUp .7s ease both; }
+@keyframes introUp { 0%{ opacity:0; transform:translateY(26px) scale(.98);} 100%{ opacity:1; transform:translateY(0) scale(1);} }
+.intro-emoji { font-size:66px; animation:floaty 3.2s ease-in-out infinite; filter:drop-shadow(0 8px 16px rgba(80,50,20,.35)); }
+@keyframes floaty { 0%,100%{ transform:translateY(0);} 50%{ transform:translateY(-12px);} }
+.intro-kicker { font-size:11px; letter-spacing:3px; text-transform:uppercase; color:#6b4f33; margin-top:12px; font-weight:800; }
+.intro-title { font-size:29px; font-weight:800; color:#33271a; margin:6px 0 12px; text-shadow:0 2px 12px rgba(255,240,200,.6); }
+.intro-text { font-size:14px; line-height:1.65; color:#4a3826; margin-bottom:14px; }
+.intro-recap { background:rgba(255,250,240,.5); border:1px solid rgba(255,255,255,.65); border-radius:16px;
+  padding:11px 13px; margin-bottom:18px; backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); }
+.recap-line { font-size:12.5px; color:#4a3826; line-height:1.5; text-align:left; }
+.recap-head { font-size:13px; font-weight:800; color:#5c3d2e; margin-bottom:6px; }
+.recap-dim { opacity:.6; }
+.recap-empty { color:#8a6a4a; }
+.intro-btn { background:linear-gradient(135deg,#6b4a2e,#372a1a); color:#fcf7f0; border:none; border-radius:30px;
+  padding:13px 32px; font-size:15px; font-weight:700; cursor:pointer; box-shadow:0 10px 26px rgba(55,42,26,.45);
+  transition:transform .12s ease, box-shadow .12s ease; }
+.intro-btn:hover { box-shadow:0 14px 32px rgba(55,42,26,.55); }
+.intro-btn:active { transform:scale(.95); }
+.intro-foot { font-size:11px; color:#6b4f33; margin-top:16px; opacity:.9; }
+
+/* ---------- global polish ---------- */
+body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
+.phone { background:linear-gradient(180deg,#f7f0e3,#f1e8d8); }
+.header { background:linear-gradient(180deg,#fcf7f0,#f6efe2); }
+.header h1 { text-shadow:0 1px 0 rgba(255,255,255,.6); }
+.tab-item.active { background:linear-gradient(180deg,#efe2cf,#e6d4ba); box-shadow:inset 0 2px 8px rgba(120,90,50,.12); }
+.map-card { background:linear-gradient(180deg,#fbf4e6,#f3ebda); box-shadow:0 8px 24px rgba(150,120,70,.14); }
+.thread-card, .people-card, .story-item, .profile-card, .settings-item { box-shadow:0 3px 12px rgba(150,120,70,.10); }
+
+/* ---------- goal progress bars (P1: visible long-term goals) ---------- */
+.goalbar-bg { height:7px; border-radius:5px; background:#ece2d3; overflow:hidden; margin-top:5px; }
+.goalbar-fill { height:100%; border-radius:5px; background:linear-gradient(90deg,#e8c074,#d99a3a); transition:width .4s ease; }
+.goalbar-fill.done { background:linear-gradient(90deg,#8ccf78,#4e9b4e); }
+.goal-meta { font-size:12px; color:#6b4f33; margin-top:3px; }
+.goal-row { display:flex; align-items:center; gap:8px; margin:7px 0; }
+.goal-row .gname { width:104px; font-size:12.5px; color:#4a3826; flex-shrink:0; }
+.goal-row .goalbar-bg { flex:1; margin-top:0; }
+.goal-row .gpct { width:36px; text-align:right; font-size:11.5px; color:#8a6a4a; flex-shrink:0; }
+.goal-foot { font-size:12px; color:#6b4f33; margin-top:8px; font-weight:700; }
+
+/* ---------- share card (P2: social currency) ---------- */
+.share-btn { float:right; background:linear-gradient(180deg,#e8c074,#d9a441); border:none; border-radius:18px; padding:5px 14px; font-weight:700; color:#4a2f15; cursor:pointer; font-size:13px; box-shadow:0 2px 6px rgba(150,120,70,.25); margin-top:2px; }
+.share-btn:active { transform:translateY(1px); }
+.share-card { padding:4px 2px; }
+.share-title { font-size:20px; font-weight:800; color:#2d2419; }
+.share-meta { color:#7a6a58; font-size:13px; margin:2px 0 14px; }
+.share-sec { margin-bottom:14px; }
+.share-h { font-size:13px; font-weight:800; color:#5c3d2e; margin-bottom:6px; letter-spacing:.3px; }
+.share-li { font-size:13.5px; color:#3a3026; line-height:1.5; margin:3px 0; }
+.share-dim { color:#9a8b7a; font-size:12px; }
+.share-foot { margin-top:10px; font-size:12px; color:#9a8b7a; font-style:italic; }
+.share-actions { display:flex; gap:10px; margin-top:14px; }
+.share-copy { flex:1; background:#efe2cf; border:none; border-radius:12px; padding:10px; font-weight:700; color:#5c3d2e; cursor:pointer; }
+.share-copy:active { background:#e6d4ba; }
+.share-hint { text-align:center; font-size:11.5px; color:#9a8b7a; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="phone" id="app">
+  <div class="status-bar"><span>Agent Village</span><span>AV-01</span></div>
+  <div class="header">
+    <div class="title-row">
+      <h1>🏘️ Willow Creek <small id="villageSub">loading…</small></h1>
+      <span style="font-size:11px;color:#7a6a58;"><span class="conn" id="connDot"></span><span id="connText">connecting</span></span>
+    </div>
+    <div class="chips">
+      <span class="chip" id="chipClock">⏳ —</span>
+      <span class="chip" id="chipWeather">🌤️ —</span>
+      <span class="chip" id="chipLLM">🤖 —</span>
+      <span class="chip" id="chipGold">💰 —</span>
+      <span class="chip" id="chipQuota">🎫 —</span>
+    </div>
+  </div>
+
+  <div class="main-content" id="mainContent">
+    <div class="screen active" id="screenVillage">
+      <div class="village-top">
+        <div id="threadBox"></div>
+        <div id="footprintBox"></div>
+      </div>
+      <div class="map-card"><svg id="mapSvg" viewBox="22 12 316 470" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div style="text-align:center;font-size:11px;color:#7a6a58;margin-top:8px;flex-shrink:0;">Tap a villager on the map or in People</div>
+    </div>
+
+    <div class="screen" id="screenPeople">
+      <div class="section-title">👥 Villagers</div>
+      <div id="peopleList"></div>
+    </div>
+
+    <div class="screen" id="screenStory">
+      <div class="story-date">📜 Story of Willow Creek
+        <button class="share-btn" id="shareBtn">📤 分享本周</button>
+      </div>
+      <div class="story-sub" id="storySub">—</div>
+      <div class="day-nav">
+        <button id="dayPrev">◀</button>
+        <span class="day-label" id="dayLabel">Day 1</span>
+        <button id="dayNext">▶</button>
+      </div>
+      <div id="storyList"></div>
+    </div>
+
+    <div class="screen" id="screenMe">
+      <div class="profile-card">
+        <div class="avatar-big">🧑‍🌾</div>
+        <div class="name" id="meName">Traveler</div>
+        <div class="gold">💰 <strong id="meGold">0</strong> Gold</div>
+        <div class="stat-row">
+          <div class="stat-box"><div class="v" id="meGiven">0</div><div class="k">Gold given</div></div>
+          <div class="stat-box"><div class="v" id="meChats">0</div><div class="k">Chats</div></div>
+          <div class="stat-box"><div class="v" id="meAgents">0</div><div class="k">Villagers</div></div>
+          <div class="stat-box"><div class="v" id="meQuota">0</div><div class="k">Interactions today</div></div>
+        </div>
+      </div>
+      <div class="settings-item" style="display:block;">
+        <span class="label">🎯 村民的梦想</span>
+        <div id="meGoals" style="margin-top:8px;"></div>
+      </div>
+      <div class="settings-item">
+        <span class="label">⏳ World speed</span>
+        <span class="speed-row" id="speedRow"></span>
+      </div>
+      <div class="settings-item">
+        <span class="label">🤖 Villager brains</span>
+        <span class="value" id="meLLM">—</span>
+      </div>
+      <div class="settings-item">
+        <span class="label">📋 Village</span>
+        <span class="value">Willow Creek · AV-01</span>
+      </div>
+      <div class="settings-item">
+        <span class="label">⚙️ Engine</span>
+        <span class="value">AgentWorld Runtime</span>
+      </div>
+      <div style="margin-top:18px;text-align:center;font-size:12px;color:#b0a392;">Agents live here even when you're away 🌙</div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-item active" data-tab="screenVillage"><span class="tab-icon">🏘️</span><span>Village</span></button>
+    <button class="tab-item" data-tab="screenPeople"><span class="tab-icon">👥</span><span>People</span></button>
+    <button class="tab-item" data-tab="screenStory"><span class="tab-icon">📜</span><span>Story</span></button>
+    <button class="tab-item" data-tab="screenMe"><span class="tab-icon">🧑</span><span>Me</span></button>
+  </div>
+
+  <div class="modal-overlay" id="agentModal">
+    <div class="modal-card">
+      <button class="close-btn" id="modalClose">✕</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="intro" id="intro">
+    <div class="intro-bg"></div>
+    <div class="intro-inner">
+      <div class="intro-emoji" id="introEmoji">🏘️</div>
+      <div class="intro-kicker" id="introKicker">A living village</div>
+      <h1 class="intro-title" id="introTitle">Willow Creek</h1>
+      <p class="intro-text" id="introText"></p>
+      <div class="intro-recap" id="introRecap"></div>
+      <button class="intro-btn" id="introBtn">进入村子 →</button>
+      <div class="intro-foot">Agents keep living here even when you're away 🌙</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const PALETTE = ["#b3543f","#c98a3d","#7a8a4d","#4d7a6a","#4d6a8a","#6a5a8a","#8a4d6a","#9a6a3d","#5a7a8a","#a04d4d"];
+const WEATHER = {"Sunny":"☀️","Cloudy":"☁️","Rainy":"🌧️","Windy":"🌬️"};
+const TYPE_COLOR = {move:"#4d6a8a",activity:"#4d7a6a",social:"#b5838d",economy:"#c98a3d",conflict:"#c44536",
+  disaster:"#c44536",milestone:"#3a7a5a",player:"#5c3d2e",day:"#7a6a58",flavor:"#6a5a8a",
+  thread:"#c98a3d",thread_done:"#3a7a5a",echo:"#8a6d3b"};
+const SPEEDS = [[2,"🐢"],[10,"▶"],[30,"⏩"],[60,"🚀"]];
+const S = { st:null, viewDay:null, colors:{}, modalId:null, chat:{}, events:[], es:null, poll:null, storyLoading:false };
+const BASE = (location.pathname.split("/")[1] ? "/" + location.pathname.split("/")[1] : "");
+
+async function api(path, opts) {
+  const r = await fetch(BASE + path, opts);
+  if (!r.ok) {
+    const err = new Error(path + " -> " + r.status);
+    err.status = r.status;
+    try { err.body = await r.json(); } catch(e) {}
+    throw err;
+  }
+  return r.json();
+}
+const jpost = (path, body) => api(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+
+async function init() {
+  try { applyState(await api("/api/state")); } catch(e) { $("villageSub").textContent = "server unreachable"; }
+  loadDay(null);
+  connectSSE();
+  showIntro();
+}
+
+/* ---------- cool entry splash (first visit vs returning) ---------- */
+function showIntro() {
+  const intro = $("intro");
+  if (!intro) return;
+  const v = S.st ? S.st.village : null;
+  const day = v ? v.day : 1;
+  const visited = (function(){ try { return localStorage.getItem("wc_visited"); } catch(e) { return null; } })();
+  if (visited) {
+    $("introEmoji").textContent = "🌙";
+    $("introKicker").textContent = "Welcome back, Traveler";
+    $("introTitle").textContent = "你回来了";
+    const open = (S.st.threads || []).filter(t => !t.resolved);
+    const echoes = (S.st.echoes || []).slice(0, 3);
+    let txt = "离开的这段日子，Willow Creek 仍在运转。";
+    if (open.length) txt += " 有 " + open.length + " 件未决之事在等你定夺。";
+    $("introText").textContent = txt;
+    const lines = ['<div class="recap-head">📌 你离开时…</div>'];
+    open.slice(0, 2).forEach(t => {
+      lines.push('<div class="recap-line">⚡ <b>' + esc(t.title || t.actor || "有件事") + '</b>'
+        + (t.due_day ? ' <span class="recap-dim">(D' + t.due_day + ' 到期)</span>' : '') + '</div>');
+    });
+    echoes.slice(0, 3).forEach(e => {
+      lines.push('<div class="recap-line">🪶 <span class="recap-dim">D' + (e.day || "?") + '</span> ' + esc(e.text) + '</div>');
+    });
+    if (!open.length && !echoes.length) lines.push('<div class="recap-line recap-empty">村子里暂时风平浪静。</div>');
+    $("introRecap").innerHTML = lines.join("");
+    $("introBtn").textContent = "回家 →";
+  } else {
+    $("introEmoji").textContent = "🏘️";
+    $("introKicker").textContent = "A living village · Day " + day;
+    $("introTitle").textContent = "你来到了 Willow Creek";
+    $("introText").textContent = "你是路过的旅人。这里的人会记得你说过的话、做过的事——哪怕你离开很久。";
+    $("introRecap").innerHTML = "";
+    $("introBtn").textContent = "进入村子 →";
+  }
+  intro.classList.add("show");
+  $("introBtn").onclick = () => {
+    try { localStorage.setItem("wc_visited", "1"); } catch(e) {}
+    intro.classList.remove("show");
+  };
+}
+
+function applyState(st) {
+  S.st = st;
+  (st.agents||[]).forEach((a,i) => { if (!(a.id in S.colors)) S.colors[a.id] = PALETTE[i % PALETTE.length]; });
+  if (S.viewDay == null) S.viewDay = st.village.day;
+  renderHeader(); renderMap(); renderPeople(); renderThreads(); renderFootprint();
+  if (S.viewDay === st.village.day && !$("storyList").children.length && !S.storyLoading) loadDay(null);
+}
+
+/* ---------- header ---------- */
+function renderHeader() {
+  const v = S.st.village;
+  $("villageSub").textContent = "Day " + v.day + " · " + v.clock;
+  $("chipClock").textContent = "⏳ Day " + v.day + " · " + v.clock;
+  $("chipWeather").textContent = (WEATHER[v.weather]||"🌤️") + " " + v.weather;
+  $("chipLLM").textContent = v.llm ? "🤖 Live LLM" : "📝 Rule-based";
+  $("chipGold").innerHTML = "💰 <b>" + (S.st.player ? S.st.player.gold : 0) + "</b> gold";
+  const q = S.st.quota;
+  if (q) {
+    $("chipQuota").textContent = "🎫 " + q.left + "/" + q.limit + " left";
+    if (q.left <= 0) $("chipQuota").style.color = "#c44536"; else $("chipQuota").style.color = "";
+    $("meQuota").textContent = q.used + "/" + q.limit;
+  }
+  $("meName").textContent = S.st.player ? S.st.player.name : "Traveler";
+  $("meGold").textContent = S.st.player ? S.st.player.gold : 0;
+  $("meGiven").textContent = S.st.player ? S.st.player.given : 0;
+  $("meChats").textContent = S.st.player ? S.st.player.chats : 0;
+  $("meAgents").textContent = (S.st.agents||[]).length;
+  $("meLLM").textContent = v.llm ? "Live LLM chat" : "Template mode (zero token)";
+  const goals = (S.st.agents||[]).filter(a => a.goal_target > 0);
+  const done = goals.filter(a => a.goal_done).length;
+  $("meGoals").innerHTML = (goals.length ? "" : '<div class="goal-meta">暂无人抱有梦想。</div>')
+    + goals.map(a => {
+        const pct = Math.min(100, Math.round(a.money / a.goal_target * 100));
+        return '<div class="goal-row"><span class="gname">'+a.emoji+' '+esc(a.name)+'</span>'
+          + '<div class="goalbar-bg"><div class="goalbar-fill'+(a.goal_done?' done':'')+'" style="width:'+pct+'%"></div></div>'
+          + '<span class="gpct">'+pct+'%</span></div>';
+      }).join("")
+    + '<div class="goal-foot">🎉 '+done+' / '+goals.length+' 已实现梦想</div>';
+  const row = $("speedRow"); row.innerHTML = "";
+  SPEEDS.forEach(([n,label]) => {
+    const b = document.createElement("button");
+    b.textContent = label + " " + n;
+    if (n === v.speed) b.classList.add("on");
+    b.onclick = async () => { try { await jpost("/api/speed", {speed:n}); } catch(e){} };
+    row.appendChild(b);
+  });
+}
+
+/* ---------- map ---------- */
+function renderMap() {
+  const svg = $("mapSvg");
+  const byPlace = {};
+  (S.st.places||[]).forEach(p => byPlace[p.id] = p);
+  const pos = id => byPlace[id] ? {x:byPlace[id].x, y:byPlace[id].y} : null;
+  let out = "";
+  (S.st.edges||[]).forEach(([a,b]) => {
+    const p1 = pos(a), p2 = pos(b);
+    if (p1 && p2) out += '<line class="edge" x1="'+p1.x+'" y1="'+p1.y+'" x2="'+p2.x+'" y2="'+p2.y+'"/>';
+  });
+  (S.st.places||[]).forEach(p => {
+    out += '<g transform="translate('+p.x+','+p.y+')">'
+      + '<circle class="place-circle" r="17"/>'
+      + '<text y="5" text-anchor="middle" font-size="15">'+p.emoji+'</text>'
+      + '<text class="place-name" y="30">'+esc(p.name)+'</text>';
+    (p.agents||[]).forEach((a,i) => {
+      const col = S.colors[a.id] || "#7a6a58";
+      let dx = ((i % 4) - 1.5) * 17, dy = Math.floor(i/4) * 12 + 40, cls = "adot";
+      if (a.traveling && a.travel_to && byPlace[a.travel_to]) {
+        const d = pos(a.travel_to);
+        dx = (d.x - p.x) * 0.38 + ((i%2)-0.5)*10;
+        dy = (d.y - p.y) * 0.38 + 17;
+        cls += " traveling";
+      }
+      out += '<g class="'+cls+'" transform="translate('+dx+','+dy+')" data-agent="'+a.id+'">'
+        + '<circle class="body" r="9" fill="'+col+'"/>'
+        + '<text y="3.2">'+a.emoji+'</text></g>';
+    });
+    out += "</g>";
+  });
+  svg.innerHTML = out;
+  svg.querySelectorAll(".adot").forEach(g => g.addEventListener("click", e => {
+    e.stopPropagation(); openAgent(+g.dataset.agent);
+  }));
+}
+
+/* ---------- people ---------- */
+function renderPeople() {
+  const list = $("peopleList");
+  list.innerHTML = (S.st.agents||[]).map(a => {
+    const col = S.colors[a.id] || "#7a6a58";
+    const act = a.traveling ? "🚶 " + esc(a.action) : esc(a.action);
+    if (a.gone) {
+      return '<div class="people-card gone" data-agent="'+a.id+'">'
+        + '<div class="people-avatar" style="background:#bbb">'+a.emoji+'</div>'
+        + '<div class="people-info"><div class="name">'+esc(a.name)+'</div>'
+        + '<div class="occupation">🚪 Left Willow Creek</div>'
+        + '<div class="status">his story ended here</div></div>'
+        + '<span class="badge">'+a.emoji+'</span></div>';
+    }
+    let goalBar = "";
+    if (a.goal_target > 0) {
+      const pct = Math.min(100, Math.round(a.money / a.goal_target * 100));
+      goalBar = '<div class="goalbar-bg"><div class="goalbar-fill'+(a.goal_done?' done':'')+'" style="width:'+pct+'%"></div></div>';
+    }
+    return '<div class="people-card" data-agent="'+a.id+'">'
+      + '<div class="people-avatar" style="background:'+col+'">'+a.emoji+'</div>'
+      + '<div class="people-info"><div class="name">'+esc(a.name)+'</div>'
+      + '<div class="occupation">'+esc(a.occupation)+(a.goal_done?" · 🎉 梦想达成":"")+'</div>'
+      + goalBar
+      + '<div class="status">'+a.mood_emoji+' '+act+'</div></div>'
+      + '<span class="badge">'+a.emoji+'</span></div>';
+  }).join("");
+  list.querySelectorAll(".people-card").forEach(c => c.addEventListener("click", () => openAgent(+c.dataset.agent)));
+}
+
+/* ---------- threads：未决之事（玩家回来的理由） ---------- */
+function renderThreads() {
+  const box = $("threadBox");
+  if (!box) return;
+  const all = S.st.threads || [];
+  const open = all.filter(t => !t.resolved);
+  const done = all.filter(t => t.resolved).slice(-3).reverse();
+  if (!open.length && !done.length) {
+    box.innerHTML = '<div class="thread-empty">🌤️ All is quiet in Willow Creek. For now.</div>';
+    return;
+  }
+  let out = "";
+  if (open.length) {
+    out += '<div class="thread-head">⚡ ' + open.length + ' thing' + (open.length > 1 ? "s" : "")
+      + ' waiting on you</div>' + open.map(threadCardHTML).join("");
+  }
+  if (done.length) {
+    out += '<div class="thread-head" style="color:#9a8b7a;">✅ Settled while you were away</div>'
+      + done.map(t => '<div class="thread-done"><div class="th-outcome">' + esc(t.outcome || "")
+      + '</div><div class="th-choice">Your choice: ' + esc(t.choice || "—") + " · Day " + t.resolved_day
+      + '</div></div>').join("");
+  }
+  box.innerHTML = out;
+  box.querySelectorAll("[data-choice]").forEach(b =>
+    b.addEventListener("click", () => decideThread(+b.dataset.tid, b.dataset.choice, b)));
+}
+function threadCardHTML(t) {
+  const today = S.st ? S.st.village.day : 0;
+  const left = t.due_day - today;
+  const due = left <= 0 ? "settles today" : (left === 1 ? "settles tomorrow" : left + " days left");
+  const opts = (t.options || []).map((o, i) =>
+    '<button data-tid="' + t.id + '" data-choice="' + esc(o) + '"' + (i === 0 ? ' class="primary"' : "")
+    + '>' + esc(o) + "</button>").join("");
+  return '<div class="thread-card"><div class="th-top"><span>' + (t.icon || "⚡") + " "
+    + esc((t.actor || "") + (t.target ? " → " + t.target : "")) + '</span><span>' + due + '</span></div>'
+    + '<div class="th-title">' + esc(t.title) + "</div>"
+    + (t.detail ? '<div class="th-detail">' + esc(t.detail) + "</div>" : "")
+    + '<div class="thread-opts">' + opts + "</div></div>";
+}
+async function decideThread(id, choice, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await jpost("/api/threads/" + id + "/decide", {choice:choice});
+    if (S.st.player) S.st.player.gold = r.player_gold;
+    if (r.quota) S.st.quota = r.quota;
+    renderHeader();
+    toast({icon:"✅", text:(r.thread && r.thread.outcome) || "Settled."});
+    try { applyState(await api("/api/state")); } catch(e) {}
+  } catch(e) {
+    if (isLimit(e)) { showLimit(e); return; }
+    toast({icon:"⚠️", text:"That matter has already been settled."});
+    try { applyState(await api("/api/state")); } catch(e2) {}
+  }
+}
+
+/* ---------- footprint：你留下的痕迹，在世界里回响 ---------- */
+function renderFootprint() {
+  const box = $("footprintBox");
+  if (!box) return;
+  const es = S.st.echoes || [];
+  if (!es.length) { box.innerHTML = ""; return; }
+  box.innerHTML = '<div class="thread-head">🎯 Your footprint</div>'
+    + es.map(e => '<div class="thread-done"><div class="th-outcome">🪶 ' + esc(e.text) + '</div>'
+      + '<div class="th-choice">Day ' + e.day + " · " + e.clock + "</div></div>").join("");
+}
+
+/* ---------- story ---------- */
+async function loadDay(day) {
+  if (S.st) S.viewDay = (day == null) ? S.st.village.day : day;
+  $("dayLabel").textContent = "Day " + S.viewDay + (S.st && S.viewDay === S.st.village.day ? " · today" : "");
+  $("dayPrev").disabled = S.viewDay <= 1;
+  $("dayNext").disabled = !!(S.st && S.viewDay >= S.st.village.day);
+  S.storyLoading = true;
+  try {
+    const r = await api("/api/events?day=" + S.viewDay + "&limit=300");
+    if (r.day !== S.viewDay) { S.storyLoading = false; return; }
+    S.events = r.events || [];
+  } catch(e) { S.events = []; }
+  S.storyLoading = false;
+  renderStory();
+}
+function renderStory() {
+  const evs = S.events || [];
+  $("storySub").textContent = evs.length + " events" + (S.st ? " · " + S.st.village.name : "");
+  const list = $("storyList");
+  if (!evs.length) { list.innerHTML = '<div class="empty-tip">Nothing recorded this day yet.<br>The villagers are just getting started…</div>'; return; }
+  list.innerHTML = evs.map(e => storyItemHTML(e, false)).join("");
+  list.querySelectorAll(".story-item").forEach(el => el.addEventListener("click", () => el.classList.toggle("expanded")));
+}
+function storyItemHTML(e, fresh) {
+  const why = (e.why && e.why.length)
+    ? '<div class="reason"><strong>Why?</strong><br>' + e.why.map(w => "• " + esc(w)).join("<br>") + '</div>'
+      + '<div class="expand-hint">Tap to see why →</div>' : "";
+  const who = e.actor ? '<span style="color:#9a8b7a;">' + esc(e.actor) + (e.target ? " → " + esc(e.target) : "") + '</span> · ' : "";
+  return '<div class="story-item'+(fresh?" fresh":"")+'" style="border-left-color:'+(TYPE_COLOR[e.type]||"#d4c5b2")+'">'
+    + '<div class="time">'+e.icon+" "+e.clock+" · "+who+"#"+e.id+'</div>'
+    + '<div class="desc">'+esc(e.text)+'</div>'+why+'</div>';
+}
+
+/* ---------- share card (P2: social currency) ---------- */
+function buildShare(events) {
+  const v = S.st.village, st = S.st;
+  const threads = st.threads || [];
+  const open = threads.filter(t => !t.resolved);
+  const echoes = (st.echoes || []).slice(0, 4);
+  const agents = st.agents || [];
+  const goals = agents.filter(a => a.goal_target > 0);
+  const doneGoals = goals.filter(a => a.goal_done).length;
+  const picks = (events || []).filter(e => e.text).slice(0, 3);
+  const w = (WEATHER[v.weather] || "") + " " + (v.weather || "");
+  let body = "";
+  if (open.length) {
+    body += '<div class="share-sec"><div class="share-h">⚡ Unfinished business</div>';
+    open.slice(0, 3).forEach(t => {
+      const who = (t.actor && t.target) ? ' <span class="share-dim">(' + esc(t.actor) + " → " + esc(t.target) + ")</span>" : "";
+      body += '<div class="share-li">• ' + esc(t.title || "Something's brewing") + who + '</div>';
+    });
+    body += '</div>';
+  }
+  if (picks.length) {
+    body += '<div class="share-sec"><div class="share-h">📖 Recent stories</div>';
+    picks.forEach(e => body += '<div class="share-li">• ' + esc(e.text) + '</div>');
+    body += '</div>';
+  } else if (echoes.length) {
+    body += '<div class="share-sec"><div class="share-h">🪶 Your footprints</div>';
+    echoes.forEach(e => body += '<div class="share-li">• ' + esc(e.text) + '</div>');
+    body += '</div>';
+  }
+  if (goals.length) {
+    body += '<div class="share-sec"><div class="share-h">🎯 Dream progress</div>'
+      + '<div class="share-li">' + doneGoals + ' / ' + goals.length + ' villagers have fulfilled their dreams</div></div>';
+  }
+  const html = '<div class="share-card">'
+    + '<div class="share-title">🌿 ' + esc(v.name || "Willow Creek") + '</div>'
+    + '<div class="share-meta">' + w + " · Day " + v.day + " · " + esc(v.clock || "") + '</div>'
+    + body
+    + '<div class="share-foot">— from AgentWorld · Willow Creek</div>'
+    + '<div class="share-actions"><button class="share-copy" id="shareTextBtn">Copy text</button>'
+    + '<button class="share-copy" id="shareMdBtn">Copy Markdown</button></div>'
+    + '<div class="share-hint">Screenshot to share with friends 👀</div>'
+    + '</div>';
+  let text = "🌿 " + (v.name || "Willow Creek") + " · Day " + v.day + "\n" + w + "\n\n";
+  if (open.length) { text += "⚡ Unfinished business:\n"; open.slice(0, 3).forEach(t => text += "• " + (t.title || "Something's brewing") + "\n"); text += "\n"; }
+  if (picks.length) { text += "📖 Recent stories:\n"; picks.forEach(e => text += "• " + e.text + "\n"); text += "\n"; }
+  else if (echoes.length) { text += "🪶 Your footprints:\n"; echoes.forEach(e => text += "• " + e.text + "\n"); text += "\n"; }
+  if (goals.length) text += "🎯 " + doneGoals + " / " + goals.length + " villagers have fulfilled their dreams\n";
+  text += "\n— from AgentWorld · Willow Creek";
+  let md = "# 🌿 " + (v.name || "Willow Creek") + " · Day " + v.day + "\n\n> " + w + "\n\n";
+  if (open.length) { md += "**⚡ Unfinished business**\n"; open.slice(0, 3).forEach(t => md += "- " + (t.title || "Something's brewing") + "\n"); md += "\n"; }
+  if (picks.length) { md += "**📖 Recent stories**\n"; picks.forEach(e => md += "- " + e.text + "\n"); md += "\n"; }
+  if (goals.length) md += "**🎯 Dream progress**\n- " + doneGoals + " / " + goals.length + " villagers have fulfilled their dreams\n";
+  md += "\n— from AgentWorld · Willow Creek";
+  return { html: html, text: text, md: md };
+}
+async function openShare() {
+  if (!S.st) { alert("村子还在加载…"); return; }
+  const v = S.st.village;
+  let events = [];
+  try { const r = await api("/api/events?day=" + v.day); events = (r && r.events) || []; } catch (e) {}
+  const card = buildShare(events);
+  $("modalContent").innerHTML = card.html;
+  $("agentModal").classList.add("open");
+  const tb = $("shareTextBtn"), mb = $("shareMdBtn");
+  if (tb) tb.onclick = () => copyText(card.text, tb);
+  if (mb) mb.onclick = () => copyText(card.md, mb);
+}
+function copyText(s, btn) {
+  const restore = () => { const o = btn.textContent; btn.textContent = "已复制 ✓"; setTimeout(() => btn.textContent = o, 1500); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).then(restore, () => fallbackCopy(s, restore));
+  } else { fallbackCopy(s, restore); }
+}
+function fallbackCopy(s, done) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = s; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+    done();
+  } catch (e) {}
+}
+$("dayPrev").addEventListener("click", () => loadDay(S.viewDay - 1));
+$("dayNext").addEventListener("click", () => loadDay(S.viewDay + 1));
+
+/* ---------- agent modal ---------- */
+async function openAgent(id) {
+  S.modalId = id;
+  $("modalContent").innerHTML = '<div class="empty-tip">Loading…</div>';
+  $("agentModal").classList.add("open");
+  try { renderModal(await api("/api/agents/" + id)); }
+  catch(e) { $("modalContent").innerHTML = '<div class="empty-tip">Failed to load villager.</div>'; }
+}
+
+function renderModal(d) {
+  const a = d.agent, col = S.colors[a.id] || "#7a6a58";
+  const traits = (d.personality||[]).map(t => "<span>"+esc(t)+"</span>").join("");
+  const goalLine = a.goal_target > 0
+    ? esc(a.goal) + ' <span style="color:#c44536;">'+a.money+"/"+a.goal_target+" 金币</span>" + (a.goal_done ? " 🎉" : "")
+    : esc(a.goal);
+  let goalHTML = "";
+  if (a.goal_target > 0) {
+    const pct = Math.min(100, Math.round(a.money / a.goal_target * 100));
+    goalHTML = '<div class="modal-sec">梦想 · '+esc(a.goal)+'</div>'
+      + '<div class="goalbar-bg" style="margin:5px 0 3px;"><div class="goalbar-fill'+(a.goal_done?' done':'')+'" style="width:'+pct+'%"></div></div>'
+      + '<div class="goal-meta">💰 '+a.money+' / '+a.goal_target+' 金币'+(a.goal_done ? ' · 🎉 已实现' : ' · 还差 '+(a.goal_target-a.money)+' 金币')+'</div>';
+  } else {
+    goalHTML = '<div class="modal-sec">梦想</div><div class="goal-meta">'+esc(a.goal)+'</div>';
+  }
+  const rels = (d.relationships||[]).map(r => {
+    const cls = r.like >= 60 ? "high" : (r.like >= 35 ? "mid" : "");
+    const nm = r.is_player ? "🧑‍🌾 You" : esc(r.name);
+    return '<div class="relation-bar"><span class="name">'+nm+'</span>'
+      + '<div class="bar-bg"><div class="bar-fill '+cls+'" style="width:'+r.like+'%"></div></div>'
+      + '<span class="num">♥'+r.like+' 🤝'+r.trust+'</span></div>';
+  }).join("") || '<div class="mem-item">No relationships yet.</div>';
+  const owes = (d.owes||[]).map(o => '<div class="mem-item">💸 Owes <b>'+esc(o.to)+"</b> "+o.amount+" gold</div>").join("");
+  const mems = (d.memories||[]).map(m =>
+    '<div class="mem-item"><span class="d">D'+m.day+"</span>"+esc(m.text)+"</div>").join("") || '<div class="mem-item">No memories yet.</div>';
+  const evs = (d.recent_events||[]).map(e =>
+    '<div class="ev-line"><span class="t">'+e.clock+"</span>"+e.icon+" "+esc(e.text)+"</div>").join("");
+  const skills = Object.entries(d.skills||{}).map(([k,v]) => k+" "+v).join(" · ");
+  $("modalContent").innerHTML =
+    '<div class="agent-header"><div class="big-avatar" style="background:'+col+'">'+a.emoji+'</div>'
+    + '<div class="title"><h2>'+esc(a.name)+'</h2><div class="sub">'+esc(a.occupation)+" · "+esc(d.place_name)+'</div>'
+    + '<div class="traits">'+traits+"</div></div></div>"
+    + '<div class="detail-row"><span class="label">Mood</span><span class="value">'+a.mood_emoji+"</span></div>"
+    + '<div class="detail-row"><span class="label">Gold</span><span class="value">💰 '+a.money+"</span></div>"
+    + '<div class="detail-row"><span class="label">Energy</span><span class="value">⚡ '+a.energy+"/100</span></div>"
+    + '<div class="detail-row"><span class="label">Doing now</span><span class="value">'+esc(a.action)+"</span></div>"
+    + goalHTML
+    + (skills ? '<div class="detail-row"><span class="label">Skills</span><span class="value">'+esc(skills)+"</span></div>" : "")
+    + (owes ? '<div class="modal-sec">Debts</div>'+owes : "")
+    + '<div class="modal-sec">Relationships</div>'+rels
+    + '<div class="modal-sec">Memory</div>'+mems
+    + (evs ? '<div class="modal-sec">Recent story</div>'+evs : "")
+    + (a.gone
+        ? '<div class="action-note" style="color:#9a8b7a;">🚪 '+esc(a.name)+' has left Willow Creek. There is nothing more to say.</div>'
+        : '<div class="action-buttons">'
+          + '<button class="primary" data-act="talk">💬 Talk</button>'
+          + '<button data-act="influence">🧠 Advice</button>'
+          + '<button data-act="gift">🎁 Gift</button></div>'
+        + '<div id="actionPanel"></div>');
+  $("modalContent").querySelectorAll("[data-act]").forEach(b =>
+    b.addEventListener("click", () => showPanel(b.dataset.act)));
+  if (!a.gone) showPanel("talk");
+}
+
+function showPanel(kind) {
+  const a = S.st && S.st.agents.find(x => x.id === S.modalId);
+  if (!a) return;
+  const p = $("actionPanel");
+  if (kind === "talk") {
+    const log = S.chat[a.id] || [];
+    p.innerHTML = '<div class="panel"><div class="chat-box" id="chatBox">'
+      + log.map(m => '<div class="bubble '+m.who+'">'+esc(m.text)+"</div>").join("")
+      + '</div><div class="input-row"><input id="chatInput" placeholder="Say something to '+esc(a.name)+'…">'
+      + '<button id="chatSend">➤</button></div><div class="action-note" id="actionNote">Chats become memories — '+esc(a.name)+" will remember.</div></div>";
+    const box = $("chatBox"); box.scrollTop = box.scrollHeight;
+    const send = async () => {
+      const inp = $("chatInput"), msg = inp.value.trim();
+      if (!msg) return;
+      inp.value = "";
+      (S.chat[a.id] = S.chat[a.id] || []).push({who:"me", text:msg});
+      box.insertAdjacentHTML("beforeend", '<div class="bubble me">'+esc(msg)+"</div>");
+      box.scrollTop = box.scrollHeight;
+      try {
+        const r = await jpost("/api/agents/"+a.id+"/chat", {message:msg});
+        (S.chat[a.id] = S.chat[a.id] || []).push({who:"them", text:r.reply});
+        box.insertAdjacentHTML("beforeend", '<div class="bubble them">'+esc(r.reply)+"</div>");
+        box.scrollTop = box.scrollHeight;
+        if (r.quota) { S.st.quota = r.quota; renderHeader(); }
+        $("actionNote").innerHTML = "♥ Like "+r.like+" · 🤝 Trust "+r.trust+" · saved to memory";
+      } catch(e) { if (isLimit(e)) showLimit(e); else $("actionNote").textContent = "Failed to send."; }
+    };
+    $("chatSend").addEventListener("click", send);
+    $("chatInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+    $("chatInput").focus();
+  } else if (kind === "influence") {
+    p.innerHTML = '<div class="panel" style="border-left:3px solid #4d6a8a;">'
+      + '<div style="font-size:12.5px;color:#6b5b4b;">Suggest something. '+esc(a.name)+' may accept or refuse — villagers have their own will.</div>'
+      + '<div class="input-row"><input id="advInput" placeholder="e.g. Go talk to Mary about your shop…">'
+      + '<button id="advSend">➤</button></div><div id="advOut" class="action-note"></div></div>';
+    const send = async () => {
+      const inp = $("advInput"), advice = inp.value.trim();
+      if (!advice) return;
+      $("advSend").disabled = true;
+      try {
+        const r = await jpost("/api/agents/"+a.id+"/influence", {advice});
+        if (r.quota) { S.st.quota = r.quota; renderHeader(); }
+        $("advOut").innerHTML = '<div class="verdict '+(r.accepted?"ok":"no")+'">'+(r.accepted?"✅ Accepted":"❌ Refused")
+          + '</div>“'+esc(r.reply)+'”<br><span style="font-size:11px;">accept chance was '+(r.probability*100).toFixed(0)+"%</span>";
+      } catch(e) { if (isLimit(e)) showLimit(e); else $("advOut").textContent = "Failed."; }
+      $("advSend").disabled = false;
+    };
+    $("advSend").addEventListener("click", send);
+    $("advInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+    $("advInput").focus();
+  } else if (kind === "gift") {
+    p.innerHTML = '<div class="panel" style="border-left:3px solid #d4a373;">'
+      + '<div style="font-size:12.5px;color:#6b5b4b;">Your gold: <b>'+((S.st.player&&S.st.player.gold)||0)+"</b></div>"
+      + '<div class="input-row"><input id="giftInput" type="number" min="1" placeholder="Gold amount">'
+      + '<button id="giftSend">🎁</button></div>'
+      + '<div class="chip-row">'+[10,50,100].map(n => '<span class="amt" data-n="'+n+'">'+n+" gold</span>").join("")+"</div>"
+      + '<div id="giftOut" class="action-note"></div></div>';
+    p.querySelectorAll(".amt").forEach(c => c.addEventListener("click", () => { $("giftInput").value = c.dataset.n; }));
+    const send = async () => {
+      const amt = parseInt($("giftInput").value, 10);
+      if (!amt || amt <= 0) return;
+      $("giftSend").disabled = true;
+      try {
+        const r = await jpost("/api/agents/"+a.id+"/gift", {gold:amt});
+        if (S.st.player) S.st.player.gold = r.player_gold;
+        if (r.quota) S.st.quota = r.quota;
+        renderHeader();
+        $("giftOut").innerHTML = '“'+esc(r.reply)+'”<br><span style="font-size:11px;">♥ Like '+r.like+" · 🤝 Trust "+r.trust+"</span>";
+      } catch(e) { if (isLimit(e)) showLimit(e); else $("giftOut").textContent = "Failed."; }
+      $("giftSend").disabled = false;
+    };
+    $("giftSend").addEventListener("click", send);
+    $("giftInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  }
+}
+
+$("modalClose").addEventListener("click", () => { $("agentModal").classList.remove("open"); S.modalId = null; });
+$("agentModal").addEventListener("click", function(e) { if (e.target === this) { this.classList.remove("open"); S.modalId = null; } });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { $("agentModal").classList.remove("open"); S.modalId = null; } });
+$("shareBtn").addEventListener("click", openShare);
+
+/* ---------- tabs ---------- */
+document.querySelectorAll(".tab-item").forEach(tab => tab.addEventListener("click", function() {
+  document.querySelectorAll(".tab-item").forEach(t => t.classList.remove("active"));
+  this.classList.add("active");
+  document.querySelectorAll(".screen").forEach(s => s.classList.toggle("active", s.id === this.dataset.tab));
+  $("mainContent").scrollTop = 0;
+  if (this.dataset.tab === "screenStory") loadDay(null);
+}));
+
+/* ---------- SSE ---------- */
+function setConn(mode) {
+  const dot = $("connDot"), txt = $("connText");
+  dot.className = "conn" + (mode === "on" ? " on" : mode === "err" ? " err" : "");
+  txt.textContent = mode === "on" ? "live" : mode === "err" ? "reconnecting" : "connecting";
+}
+function connectSSE() {
+  try { if (S.es) S.es.close(); } catch(e) {}
+  const es = new EventSource(BASE + "/api/stream");
+  S.es = es;
+  es.onopen = () => { setConn("on"); if (S.poll) { clearInterval(S.poll); S.poll = null; } };
+  es.onmessage = msg => {
+    let ev; try { ev = JSON.parse(msg.data); } catch(e) { return; }
+    if (ev.type === "village.state") applyState(ev.data);
+    else if (ev.type === "village.event") onWorldEvent(ev.data);
+  };
+  es.onerror = () => {
+    setConn("err");
+    if (!S.poll) S.poll = setInterval(async () => {
+      try { applyState(await api("/api/state")); } catch(e) {}
+    }, 6000);
+  };
+}
+function onWorldEvent(e) {
+  if (!e) return;
+  if (e.day === S.viewDay && !S.storyLoading) {
+    S.events.unshift(e);
+    if (S.events.length > 300) S.events.pop();
+    if ($("screenStory").classList.contains("active")) {
+      const list = $("storyList");
+      const tip = list.querySelector(".empty-tip");
+      if (tip) tip.remove();
+      list.insertAdjacentHTML("afterbegin", storyItemHTML(e, true));
+      const item = list.firstElementChild;
+      item.addEventListener("click", () => item.classList.toggle("expanded"));
+      if (list.children.length > 300) list.lastElementChild.remove();
+      $("storySub").textContent = S.events.length + " events" + (S.st ? " · " + S.st.village.name : "");
+    }
+  }
+  if (["milestone","disaster","player","day","conflict","thread","thread_done","echo"].includes(e.type)) toast(e);
+}
+function isLimit(e) { return !!(e && (e.status === 429 || (e.body && e.body.error === "daily_limit"))); }
+async function showLimit(e) {
+  toast({icon:"🎫", text:(e.body && e.body.notice) || "No interactions left today. Dawn brings new ones."});
+  try { applyState(await api("/api/state")); } catch(_) {}
+}
+function toast(e) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.innerHTML = "<span style='font-size:16px;'>"+e.icon+"</span><span>"+esc(e.text)+"</span>";
+  $("toasts").appendChild(t);
+  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, 3600);
+  setTimeout(() => t.remove(), 4100);
+  while ($("toasts").children.length > 3) $("toasts").firstElementChild.remove();
+}
+
+init();
+</script>
+</body>
+</html>

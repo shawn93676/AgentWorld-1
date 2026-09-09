@@ -138,6 +138,89 @@ the `ToolGuard` blocks malicious calls with **0 executions** of denied actions.
 
 ---
 
+## Life Runtime — Agent as a portable first-class citizen
+
+AgentWorld's Runtime (`internal/agent` + `sdk` + `scheduler`) already treats worlds as
+pluggable `sdk.Module`s and drives every agent through one `Think` loop
+(Perceive → Planner → Executor), with `WakePolicy` deciding who wakes. `internal/life`
+is a **narrow complementary layer** for two M9 concepts the general framework does not
+yet cover — it deliberately does **not** re-implement scheduling or modules:
+
+- **`LifeState`** — `alive / sleeping / traveling / dead / archived`. Each world's
+  `Think` loop guards on `LifeState.IsActive()` to skip sleeping / dead / traveling
+  agents. In the Village, `DecideFor` and the `Tick` advance-loops all honor this
+  guard, so lifecycle is a real input to the simulation, not just an enum.
+- **`Move(from, to, id)`** — a transactional cross-world transfer. It marks
+  `pending`, calls `from.Leave(id)` to freeze the agent's portable state, calls
+  `to.Enter(...)` to unfreeze it, and on any failure rolls back (`from.Enter`) and
+  marks `failed` — guaranteeing an agent is never duplicated or silently lost.
+
+### The world-developer contract (BaseAdapter + PortableCore)
+
+A new world does **not** re-implement id-mapping / lifecycle / transaction boilerplate.
+It embeds `*life.BaseAdapter` and implements one small interface, `life.PortableCore`:
+
+| Hook | Responsibility |
+|---|---|
+| `WorldKey()` / `CanAccept(p)` | stable name + whether a portable can enter this world |
+| `SeedNames()` | initial `stable-name → local-ID` map (agents already in the world) |
+| `StoreGet / StorePut / StoreRemove` | the world's agent store (get / upsert / delete by local ID) |
+| `StoreAllocLocal()` | hand out a fresh unused local ID for an incoming agent |
+| `ExportLocked(local, ag)` | translate a world agent → `AgentPortable` (pure translation) |
+| `ImportLocked(local, p)` | translate `AgentPortable` → world agent (may stash un-representable fields in a side map) |
+
+`BaseAdapter` then supplies — for free — `Leave` / `Enter` / `Export` / `LocalID` /
+`SelfTest` and the `Move` transaction. Net result: **adding a 3rd / 4th world is ~15
+lines of translation, not ~150 lines of copy-pasted adapter.**
+
+### Registry + SelfTest (plumbing you get for free)
+
+- `life.Registry` — adapters self-register by `WorldKey`; `Move` can be addressed by
+  name (`reg.MoveByKey("village", "economy", "Marcus")`) instead of passing adapter
+  instances around by hand.
+- `life.SelfTest(sample)` — runs the gold-standard round trip
+  `export → import → export` and asserts strict equality. Every new world gets a
+  free correctness check the moment it implements `PortableCore`.
+
+```go
+// Adding a new world is just the translation + store hooks:
+type GooseAdapter struct { *life.BaseAdapter; w *goose.World }
+func NewGooseAdapter(w *goose.World) *GooseAdapter {
+    a := &GooseAdapter{w: w}
+    a.BaseAdapter = &life.BaseAdapter{}
+    a.BaseAdapter.Init(a)            // snapshots, id-map, lifecycle — all free
+    return a
+}
+// then implement the 7 PortableCore hooks above; that's it.
+```
+
+See [`internal/life`](internal/life) (incl. `life_test.go` as a copy-paste template)
+and the two reference adapters:
+[`worlds/village/village/life_adapter.go`](worlds/village/village/life_adapter.go) ·
+[`worlds/economy/economy/life_adapter.go`](worlds/economy/economy/life_adapter.go).
+
+### M9 demo — the Runtime is World-agnostic (proven)
+
+`experiments/m9` runs Marcus through a real cross-world round trip and asserts
+continuity:
+
+```bash
+go run ./experiments/m9/
+# M9 PASS — 他真的把自己的人生带过去了。
+```
+
+| Continuity check | Before → After |
+|---|---|
+| Identity (AgentID) | `Marcus` → `Marcus` ✅ |
+| Skill evolution | `blacksmith Lv5` → `Lv6` ✅ |
+| Memories grew (with new experience) | 2 → 3 ✅ |
+
+The same `Move` transaction is world-independent; worlds only supply the
+translation. This is the first real proof that **Life Runtime is independent of the
+World** — exactly as the Reliability Runtime was shown to be.
+
+---
+
 ## Context Runtime (M8)
 
 M8 adds a **Context Runtime** that sits between Perception and the LLM, so that what an agent "sees" each Think is assembled, retrieved, and compacted deterministically rather than by ad-hoc prompt concatenation.
@@ -588,6 +671,7 @@ Hotel Agent                          Travel Agent
 | Pascal World v0.1 | 1 agent × 5 issues, real FPC compile+test | ✅ |
 | Cold / Warm | experience retrieved 21×, behavior ~flat (null-ish, kept) | ✅ |
 | **Experience → Behavior** | A/B/C single-variable experiment (not M9) | 🚧 current |
+| **Life Runtime** | `internal/life`: LifeState + transactional `Move` + `BaseAdapter`/`PortableCore`/`Registry`/`SelfTest` ergonomics; Village `Think` loop guards on `LifeState`; M9 village↔economy round trip proven | ✅ |
 | v0.1 | Open-source polish (README / Docker / Demo) | 🚧 in progress |
 
 ---

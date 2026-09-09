@@ -59,6 +59,28 @@ Agent + World + Need + Goal + Plan + Memory
 
 ---
 
+## Life Runtime —— 把 Agent 提升为可携带的一等公民
+
+AgentWorld 的 Runtime（`internal/agent` + `sdk` + `scheduler`）早已把世界视为可插拔的
+`sdk.Module`，并通过统一的 `Think` 循环（感知 → 决策 → 执行）驱动每个 Agent，由
+`WakePolicy` 决定谁被唤醒。村庄正是这样接入的：`worlds/village/module.go` 实现了
+`sdk.Module`，`hub.go` 把它注册进 `agent.Runtime` 与 `scheduler.Scheduler`。
+
+`internal/life` 是一层**窄补充**，只补通用框架尚未覆盖的两处 M9 概念——它**不**重复实现
+调度或模块：
+
+- **`LifeState`** —— `alive / sleeping / traveling / dead / archived`。框架原本只有
+  `Status: "running"`，这里补上真正的生命周期语义。`Think` 循环用 `LifeState.IsActive()`
+  守卫，跳过休眠/死亡 Agent。
+- **`Move(from, to, id)`** —— 事务化的跨 World 转移。先标记 `pending`，调用
+  `from.Leave(id)` 冻结 Agent 的便携状态，再 `to.Enter(...)` 解冻；任一步失败则回滚
+  （`from.Enter`）并标记 `failed`，保证 Agent 既不会被复制成两份，也不会凭空消失。
+
+世界只需实现两个极小的接口（`Transporter { Leave / Enter }` 与 `Portable { AgentID() }`）；
+感知/决策/执行仍由 `sdk.Module` 负责。详见 [`internal/life`](internal/life)。
+
+---
+
 ## 上下文运行时（M8）
 
 M8 在「感知」与「LLM」之间新增了一层**上下文运行时（Context Runtime）**：每个 Think 智能体「看到」的内容由它确定性地组装、检索、压缩，而不是随意拼接 prompt。
@@ -264,6 +286,7 @@ Hotel Agent                          Travel Agent
 | M11 | 官方模块 SDK 化（Dogfooding） | ✅ |
 | M12 | ACL / Registry / Selection / Federation（跨实例，含共享密钥鉴权） | ✅ |
 | v0.1 | 开源整理（README / Docker / Demo）+ 安全加固（JWT / Federation 签名 / 并发锁） | 🚧 进行中 |
+| **Life Runtime** | `internal/life`：LifeState 生命周期 + 事务化跨 World `Move`（补 `internal/agent`+`sdk`+`scheduler` 之不足） | 🚧 进行中 |
 | Phase 2 | SDK 正式化（目录结构 agentworld/sdk + runtime + modules） | ⏳ |
 | Phase 3+ | Marketplace / Agent 级 Reputation / Memory 升级 / 3D Explorer | ⏳ |
 
