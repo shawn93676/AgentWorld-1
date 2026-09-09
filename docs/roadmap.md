@@ -51,6 +51,21 @@ Make "clone and run in 10 minutes" real.
 | 6 | Module Marketplace (AgentWorld Hub) | ★★★ |
 | 7 | 3D World Explorer (social simulation viewer) | ★★★ |
 
+## World Network Strategy
+
+> Once the cross-world mechanism (Life Runtime: `Move` / `LifeState` / `Adapter`) works, the
+> focus shifts from *adding features* to growing a **sustainable World Network**. A World is no
+> longer a hardcoded destination — the agent chooses a world by its **capabilities**.
+
+| Step | Goal | Status |
+|---|---|---|
+| **M9-A** | Marcus autonomously lives across worlds (Village→Economy→Village), decided by the agent itself | 🚧 current |
+| **M10** | A third world (Goose / Pascal) plugs in via the same Adapter hooks | ⏳ next |
+| **M11** | Agent discovers & chooses worlds by *capability*, not hardcoded destinations | ⏳ |
+| **M12** | Open World Protocol: 3rd-party `WorldAdapter` + `World Manifest` + World Network | ⏳ |
+
+See `ROADMAP.md` (zh) for the full acceptance criteria.
+
 > **Sequencing note**: Federation (Phase 3) deliberately came before the package
 > refactor (Phase 2). The wire protocol pins down the real SDK / Message / Runtime /
 > Module boundaries — so the later refactor follows the protocol instead of guessing.

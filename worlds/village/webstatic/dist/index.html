@@ -266,7 +266,7 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
 
     <div class="screen" id="screenStory">
       <div class="story-date">📜 Story of Willow Creek
-        <button class="share-btn" id="shareBtn">📤 分享本周</button>
+        <button class="share-btn" id="shareBtn">📤 Share this week</button>
       </div>
       <div class="story-sub" id="storySub">—</div>
       <div class="day-nav">
@@ -290,7 +290,7 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
         </div>
       </div>
       <div class="settings-item" style="display:block;">
-        <span class="label">🎯 村民的梦想</span>
+        <span class="label">🎯 Villagers' dreams</span>
         <div id="meGoals" style="margin-top:8px;"></div>
       </div>
       <div class="settings-item">
@@ -305,7 +305,7 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
         <span class="label">📋 Village</span>
         <span class="value">Willow Creek · AV-01</span>
       </div>
-      <div class="settings-item">
+      <div class="settings-item" id="engineItem" style="cursor:pointer;" title="Open source on GitHub">
         <span class="label">⚙️ Engine</span>
         <span class="value">AgentWorld Runtime</span>
       </div>
@@ -337,7 +337,7 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
       <h1 class="intro-title" id="introTitle">Willow Creek</h1>
       <p class="intro-text" id="introText"></p>
       <div class="intro-recap" id="introRecap"></div>
-      <button class="intro-btn" id="introBtn">进入村子 →</button>
+      <button class="intro-btn" id="introBtn">Enter the village →</button>
       <div class="intro-foot">Agents keep living here even when you're away 🌙</div>
     </div>
   </div>
@@ -373,6 +373,16 @@ async function init() {
   loadDay(null);
   connectSSE();
   showIntro();
+  bindEngineLink();
+}
+
+function bindEngineLink() {
+  const ei = document.getElementById("engineItem");
+  if (!ei) return;
+  ei.addEventListener("click", () => {
+    window.open("https://github.com/iwana888/AgentWorld", "_blank");
+    if (typeof toast === "function") toast({icon:"🔗", text:"Opening AgentWorld on GitHub…"});
+  });
 }
 
 /* ---------- cool entry splash (first visit vs returning) ---------- */
@@ -385,30 +395,30 @@ function showIntro() {
   if (visited) {
     $("introEmoji").textContent = "🌙";
     $("introKicker").textContent = "Welcome back, Traveler";
-    $("introTitle").textContent = "你回来了";
+    $("introTitle").textContent = "Welcome back";
     const open = (S.st.threads || []).filter(t => !t.resolved);
     const echoes = (S.st.echoes || []).slice(0, 3);
-    let txt = "离开的这段日子，Willow Creek 仍在运转。";
-    if (open.length) txt += " 有 " + open.length + " 件未决之事在等你定夺。";
+    let txt = "While you were away, Willow Creek kept running.";
+    if (open.length) txt += " There are " + open.length + " unresolved matters awaiting your decision.";
     $("introText").textContent = txt;
     const lines = ['<div class="recap-head">📌 你离开时…</div>'];
     open.slice(0, 2).forEach(t => {
-      lines.push('<div class="recap-line">⚡ <b>' + esc(t.title || t.actor || "有件事") + '</b>'
-        + (t.due_day ? ' <span class="recap-dim">(D' + t.due_day + ' 到期)</span>' : '') + '</div>');
+      lines.push('<div class="recap-line">⚡ <b>' + esc(t.title || t.actor || "something") + '</b>'
+        + (t.due_day ? ' <span class="recap-dim">(D' + t.due_day + ' due)</span>' : '') + '</div>');
     });
     echoes.slice(0, 3).forEach(e => {
       lines.push('<div class="recap-line">🪶 <span class="recap-dim">D' + (e.day || "?") + '</span> ' + esc(e.text) + '</div>');
     });
-    if (!open.length && !echoes.length) lines.push('<div class="recap-line recap-empty">村子里暂时风平浪静。</div>');
+    if (!open.length && !echoes.length) lines.push('<div class="recap-line recap-empty">The village is peaceful for now.</div>');
     $("introRecap").innerHTML = lines.join("");
-    $("introBtn").textContent = "回家 →";
+    $("introBtn").textContent = "Go home →";
   } else {
     $("introEmoji").textContent = "🏘️";
     $("introKicker").textContent = "A living village · Day " + day;
-    $("introTitle").textContent = "你来到了 Willow Creek";
-    $("introText").textContent = "你是路过的旅人。这里的人会记得你说过的话、做过的事——哪怕你离开很久。";
+    $("introTitle").textContent = "You have arrived at Willow Creek";
+    $("introText").textContent = "You are a passing traveler. The villagers remember what you said and did — even if you've been away for a long time.";
     $("introRecap").innerHTML = "";
-    $("introBtn").textContent = "进入村子 →";
+    $("introBtn").textContent = "Enter the village →";
   }
   intro.classList.add("show");
   $("introBtn").onclick = () => {
@@ -447,14 +457,14 @@ function renderHeader() {
   $("meLLM").textContent = v.llm ? "Live LLM chat" : "Template mode (zero token)";
   const goals = (S.st.agents||[]).filter(a => a.goal_target > 0);
   const done = goals.filter(a => a.goal_done).length;
-  $("meGoals").innerHTML = (goals.length ? "" : '<div class="goal-meta">暂无人抱有梦想。</div>')
+  $("meGoals").innerHTML = (goals.length ? "" : '<div class="goal-meta">No one holds a dream yet.</div>')
     + goals.map(a => {
         const pct = Math.min(100, Math.round(a.money / a.goal_target * 100));
         return '<div class="goal-row"><span class="gname">'+a.emoji+' '+esc(a.name)+'</span>'
           + '<div class="goalbar-bg"><div class="goalbar-fill'+(a.goal_done?' done':'')+'" style="width:'+pct+'%"></div></div>'
           + '<span class="gpct">'+pct+'%</span></div>';
       }).join("")
-    + '<div class="goal-foot">🎉 '+done+' / '+goals.length+' 已实现梦想</div>';
+    + '<div class="goal-foot">🎉 '+done+' / '+goals.length+' dreams fulfilled</div>';
   const row = $("speedRow"); row.innerHTML = "";
   SPEEDS.forEach(([n,label]) => {
     const b = document.createElement("button");
@@ -524,7 +534,7 @@ function renderPeople() {
     return '<div class="people-card" data-agent="'+a.id+'">'
       + '<div class="people-avatar" style="background:'+col+'">'+a.emoji+'</div>'
       + '<div class="people-info"><div class="name">'+esc(a.name)+'</div>'
-      + '<div class="occupation">'+esc(a.occupation)+(a.goal_done?" · 🎉 梦想达成":"")+'</div>'
+      + '<div class="occupation">'+esc(a.occupation)+(a.goal_done?" · 🎉 dream fulfilled":"")+'</div>'
       + goalBar
       + '<div class="status">'+a.mood_emoji+' '+act+'</div></div>'
       + '<span class="badge">'+a.emoji+'</span></div>';
@@ -687,7 +697,7 @@ function buildShare(events) {
   return { html: html, text: text, md: md };
 }
 async function openShare() {
-  if (!S.st) { alert("村子还在加载…"); return; }
+  if (!S.st) { alert("The village is still loading…"); return; }
   const v = S.st.village;
   let events = [];
   try { const r = await api("/api/events?day=" + v.day); events = (r && r.events) || []; } catch (e) {}
@@ -728,16 +738,16 @@ function renderModal(d) {
   const a = d.agent, col = S.colors[a.id] || "#7a6a58";
   const traits = (d.personality||[]).map(t => "<span>"+esc(t)+"</span>").join("");
   const goalLine = a.goal_target > 0
-    ? esc(a.goal) + ' <span style="color:#c44536;">'+a.money+"/"+a.goal_target+" 金币</span>" + (a.goal_done ? " 🎉" : "")
+    ? esc(a.goal) + ' <span style="color:#c44536;">'+a.money+"/"+a.goal_target+" coins</span>" + (a.goal_done ? " 🎉" : "")
     : esc(a.goal);
   let goalHTML = "";
   if (a.goal_target > 0) {
     const pct = Math.min(100, Math.round(a.money / a.goal_target * 100));
-    goalHTML = '<div class="modal-sec">梦想 · '+esc(a.goal)+'</div>'
+    goalHTML = '<div class="modal-sec">Dream · '+esc(a.goal)+'</div>'
       + '<div class="goalbar-bg" style="margin:5px 0 3px;"><div class="goalbar-fill'+(a.goal_done?' done':'')+'" style="width:'+pct+'%"></div></div>'
-      + '<div class="goal-meta">💰 '+a.money+' / '+a.goal_target+' 金币'+(a.goal_done ? ' · 🎉 已实现' : ' · 还差 '+(a.goal_target-a.money)+' 金币')+'</div>';
+      + '<div class="goal-meta">💰 '+a.money+' / '+a.goal_target+' coins'+(a.goal_done ? ' · 🎉 fulfilled' : ' · needs '+(a.goal_target-a.money)+' more coins')+'</div>';
   } else {
-    goalHTML = '<div class="modal-sec">梦想</div><div class="goal-meta">'+esc(a.goal)+'</div>';
+    goalHTML = '<div class="modal-sec">Dream</div><div class="goal-meta">'+esc(a.goal)+'</div>';
   }
   const rels = (d.relationships||[]).map(r => {
     const cls = r.like >= 60 ? "high" : (r.like >= 35 ? "mid" : "");

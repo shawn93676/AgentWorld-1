@@ -334,6 +334,19 @@ func (b *BaseAdapter) LocalIDUnlocked(pid AgentID) (int64, bool) {
 	return id, ok
 }
 
+// TravelerIDs 返回当前在场（通过 Enter 进入本世界）的 Agent 稳定身份。
+// 种子 Agent 不走 adapter.Enter，不会列入——只有“外来旅客”会。Travel 驱动据此识别需要被
+// 本世界自主接管的跨世界 Agent（例如 Economy 里的 Marcus）。
+func (b *BaseAdapter) TravelerIDs() []AgentID {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ids := make([]AgentID, 0, len(b.idMap))
+	for id := range b.idMap {
+		ids = append(ids, AgentID(id))
+	}
+	return ids
+}
+
 // WorldKey 委派给 core。
 func (b *BaseAdapter) WorldKey() string { return b.core.WorldKey() }
 
@@ -455,11 +468,28 @@ func portableEqual(a, b AgentPortable) bool {
 type Registry struct {
 	mu       sync.Mutex
 	adapters map[string]PortableAdapter
+	endpoints map[string]string // WorldKey → 该世界 Life API 的 HTTP 基址（如 http://host:port/life）
 }
 
 // NewRegistry 构造一个空注册中心。
 func NewRegistry() *Registry {
-	return &Registry{adapters: map[string]PortableAdapter{}}
+	return &Registry{adapters: map[string]PortableAdapter{}, endpoints: map[string]string{}}
+}
+
+// SetEndpoint 登记某 WorldKey 对应的 Life API 基址（跨进程 Travel 时用于 POST /enter）。
+// 以后换成真正远程服务器，只需改这里传入的 URL，Agent 生命周期模型不变。
+func (r *Registry) SetEndpoint(key, url string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.endpoints[key] = url
+}
+
+// Endpoint 返回某 WorldKey 对应的 Life API 基址。
+func (r *Registry) Endpoint(key string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.endpoints[key]
+	return u, ok
 }
 
 // Register 注册一个世界 adapter（以其 WorldKey 为索引）。
@@ -497,6 +527,27 @@ func (r *Registry) MoveByKey(fromKey, toKey, id string) (Transition, error) {
 		return t, fmt.Errorf("%s", t.Err)
 	}
 	return Move(from, to, AgentID(id))
+}
+
+// MoveByKeyRemote 按 WorldKey 寻址后执行跨进程 Move（WorldKey → Endpoint → HTTP World API）。
+// from 必须是本进程内已注册的 adapter（源）；to 仅需知道其 Endpoint URL（目的地可为远程进程）。
+func (r *Registry) MoveByKeyRemote(fromKey, toKey, id string) (Transition, error) {
+	from, ok1 := r.Get(fromKey)
+	toURL, ok2 := r.Endpoint(toKey)
+	if !ok1 || !ok2 {
+		t := Transition{AgentID: AgentID(id), From: fromKey, To: toKey,
+			Status: TransitionFailed, At: time.Now(),
+			Err: fmt.Sprintf("registry: missing world(s): from=%s(%v) to=%s(%v)", fromKey, ok1, toKey, ok2)}
+		return t, fmt.Errorf("%s", t.Err)
+	}
+	src, ok := from.(remoteSource)
+	if !ok {
+		t := Transition{AgentID: AgentID(id), From: fromKey, To: toKey,
+			Status: TransitionFailed, At: time.Now(),
+			Err: fmt.Sprintf("registry: source %q adapter lacks remote capability", fromKey)}
+		return t, fmt.Errorf("%s", t.Err)
+	}
+	return MoveRemote(src, toURL, AgentID(id))
 }
 
 // SelfTestAll 对注册中心内每个 adapter 跑一次给定 sample 的往返校验，返回所有错误。

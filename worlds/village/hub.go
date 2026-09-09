@@ -13,12 +13,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"agentworld/internal/agent"
 	"agentworld/internal/db"
+	"agentworld/internal/life"
 	"agentworld/internal/llm"
 	"agentworld/internal/models"
 	"agentworld/internal/scheduler"
@@ -34,6 +36,7 @@ type Instance struct {
 	World     *vv.World
 	Mod       *Module
 	Obs       *goose.Observatory
+	Adapter   *vv.VillageAdapter // Life Runtime 桥接（跨进程 Travel 的本地落地点）
 	Snapshot  string
 	dbIDs     []int64
 }
@@ -44,6 +47,7 @@ type Hub struct {
 	m       map[string]*Instance
 	factory func(uid string, ctx context.Context) (*Instance, error)
 	ctx     context.Context
+	primary *Instance
 }
 
 // NewHub 用工厂函数构建 Hub；工厂负责为一个 uid 创建完整世界实例。
@@ -66,7 +70,44 @@ func (h *Hub) Get(uid string) (*Instance, error) {
 		return nil, err
 	}
 	h.m[uid] = inst
+	if h.primary == nil && uid != "" {
+		h.primary = inst
+	}
 	return inst, nil
+}
+
+// demoUID 返回演示世界 uid（通过环境变量 VILLAGE_DEMO_UID 指定）。
+// 设置后，所有 web 访客与跨进程 Travel 都落在同一个世界里（含铁匠 Marcus），
+// 便于展示“跨进程数字生命旅程”。未设置则保持原生多租户（每访客独立世界）。
+func demoUID() string {
+	if u := os.Getenv("VILLAGE_DEMO_UID"); u != "" {
+		return u
+	}
+	return ""
+}
+
+// DefaultUID 返回本进程用作“演示/跨进程 Travel”的世界 uid：优先 VILLAGE_DEMO_UID，
+// 否则退回到首个被创建的世界（primary）。
+func (h *Hub) DefaultUID() string {
+	if u := demoUID(); u != "" {
+		return u
+	}
+	if h.primary != nil {
+		return h.primary.UID
+	}
+	return ""
+}
+
+// PrimaryInstance 返回首个被创建的世界实例（多租户 fallback）。
+func (h *Hub) PrimaryInstance() *Instance { return h.primary }
+
+// LifeAdapter 返回某游客世界实例的 Life Runtime 桥（跨进程 Travel 的本地落地点）。
+func (h *Hub) LifeAdapter(uid string) (life.PortableAdapter, error) {
+	inst, err := h.Get(uid)
+	if err != nil {
+		return nil, err
+	}
+	return inst.Adapter, nil
 }
 
 // SaveAll 保存所有已创建的世界快照（退出或定时自动保存时调用）。
@@ -105,6 +146,7 @@ func NewInstance(uid string, ctx context.Context, d *gorm.DB, llmClient *llm.Cli
 	mod.EnableLLM(llmClient)
 
 	inst := &Instance{UID: uid, WorldName: worldName, World: world, Mod: mod, Obs: obs, Snapshot: snapPath, dbIDs: ids}
+	inst.Adapter = vv.NewVillageAdapter(world) // Life Runtime 桥：跨进程 Travel 在本世界落地
 
 	// 世界时钟：每 tick 推进 speed 个游戏分钟
 	go func() {

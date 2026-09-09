@@ -81,7 +81,7 @@ func (w *World) echoPlayerTrace(a *Agent, m *Memory) {
 var positiveTrace = map[string]bool{
 	"gift": true, "fund_give": true, "fund_work": true,
 	"debt_pay": true, "mediate": true, "sided_with": true,
-	"advice": true, "omen_ask": true,
+	"advice": true, "omen_ask": true, "borrow": true,
 }
 
 // echoText 按干预类型生成回响台词。

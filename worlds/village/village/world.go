@@ -124,10 +124,11 @@ type Event struct {
 
 // Player 玩家（Observer / Influencer）。V0.1 单玩家免登录。
 type Player struct {
-	Name   string `json:"name"`
-	Gold   int64  `json:"gold"`
-	Given  int64  `json:"given"`
-	Chats  int64  `json:"chats"`
+	Name      string `json:"name"`
+	Gold      int64  `json:"gold"`
+	Given     int64  `json:"given"`      // 玩家赠予村民的累计金币
+	Borrowed  int64  `json:"borrowed"`   // 玩家向村民借/讨的累计金币（不记反向债务）
+	Chats     int64  `json:"chats"`
 	ActDay int    `json:"act_day"` // 行动额度所属日（跨日自动重置）
 	Acts   int    `json:"acts"`    // 当日已用行动数
 }
@@ -247,6 +248,13 @@ func (w *World) Attach(id int64, p Profile) {
 		a.ActionUntil, a.GoalDone = snap.ActionUntil, snap.GoalDone
 		a.Plan = snap.Plan
 		a.Mem = snap.Mem
+		if len(snap.Skills) > 0 {
+			sk := make(map[string]int, len(snap.Skills))
+			for k, v := range snap.Skills {
+				sk[k] = v
+			}
+			a.Skills = sk
+		}
 		a.Due = true
 		a.snapRel, a.snapOwes = snap.Rel, snap.Owes
 	}
@@ -348,6 +356,31 @@ func (w *World) addEvent(e Event) {
 	}
 }
 
+// FindAgentByName 按名字查找 Agent 的本地 ID（用于定位跨世界旅行的主角，如铁匠 Marcus）。
+func (w *World) FindAgentByName(name string) (int64, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for id, a := range w.agents {
+		if a.Name == name {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// EmitEvent 向世界事件流追加一条事件（用于跨世界旅程的 departure / work / return 可见性）。
+func (w *World) EmitEvent(typ, icon, actor, text string, why ...string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.addEvent(Event{
+		Type:  typ,
+		Icon:  icon,
+		Actor: actor,
+		Text:  text,
+		Why:   why,
+	})
+}
+
 // AllEvents 返回全部事件（新的在前，limit 上限 500）。
 func (w *World) AllEvents(limit int) []Event {
 	w.mu.Lock()
@@ -407,6 +440,7 @@ type agentSnap struct {
 	Rel         map[string]relSnap `json:"rel,omitempty"`
 	Owes        map[string]int64   `json:"owes,omitempty"`
 	Mem         []Memory           `json:"mem"`
+	Skills      map[string]int      `json:"skills,omitempty"` // 技能持久化（否则跨重启/快照后技能丢失）
 	Plan        *Plan              `json:"plan,omitempty"`
 }
 
@@ -448,6 +482,13 @@ func (w *World) saveLocked() error {
 			Place: a.Place, ActKind: a.ActKind, Action: a.Action, TravelTo: a.TravelTo,
 			ActionUntil: a.ActionUntil, GoalDone: a.GoalDone, Plan: a.Plan, Mem: a.Mem,
 			Rel: map[string]relSnap{}, Owes: map[string]int64{}}
+		if len(a.Skills) > 0 {
+			sk := make(map[string]int, len(a.Skills))
+			for k, v := range a.Skills {
+				sk[k] = v
+			}
+			s.Skills = sk
+		}
 		for oid, r := range a.Rel {
 			if n := nameOf(oid); n != "" {
 				s.Rel[n] = relSnap{Like: r.Like, Trust: r.Trust}

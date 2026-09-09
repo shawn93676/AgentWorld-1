@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -27,16 +28,50 @@ import (
 	"agentworld/internal/agent"
 	"agentworld/internal/bus"
 	"agentworld/internal/db"
+	"agentworld/internal/life"
 	"agentworld/internal/llm"
 	"agentworld/internal/models"
 	"agentworld/internal/scheduler"
+	"agentworld/sdk"
 	"agentworld/worlds/economy"
 	ec "agentworld/worlds/economy/economy"
 	"agentworld/worlds/goosegame/goose"
+	"net/http"
+	"sync"
 )
 
 // 经济世界角色（名字/职业/性格/初始资产）由 economy.InitialProfiles 定义。
 // 这里只创建 Agent 的持久元数据（名字/职业/性格/目标）。
+
+// travelers 记录通过 /life/enter 真正“跨世界抵达”本世界的 Agent（稳定的跨进程旅客），
+// 与种子 Agent（由本世界自己创建、走 DB 调度器）区分开。TravelerDriver 只驱动这里登记的旅客。
+var (
+	travelerMu sync.Mutex
+	travelers  = map[life.AgentID]bool{}
+	// travelerStates 记录每个跨世界旅客的旅程阶段，使“跨世界旅行”有时间节奏，
+	// 而不是抵达后瞬间打工、瞬间返回。
+	travelerStates = map[life.AgentID]*travelerState{}
+)
+
+// travelerState 记录跨世界旅客在 Economy 的旅程阶段。
+type travelerState struct {
+	arrivedAt time.Time
+	jobs      int
+	greeted   bool
+}
+
+// 旅程节奏（可按需调大/调小）：抵达后先安顿、分阶段打几份工、打完工再等一会才回村。
+const (
+	travelArriveDelay = 10 * time.Second // 抵达后先“安顿”
+	travelWorkGap     = 8 * time.Second  // 每份工之间的间隔
+	travelTargetJobs  = 2                // 总共打几份工
+	travelReturnDelay = 10 * time.Second // 打完工再等一会儿才回村
+)
+
+func writeJSONW(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
 
 func main() {
 	dbPath := envOr("ECO_DB", "economy.db")
@@ -88,6 +123,54 @@ func main() {
 	mod := economy.New(agentIDs, names, personalities, obs)
 	rt.RegisterModule("economy", mod)
 
+	// 跨进程 Life 端点：本世界作为 Travel 目的地，接收 POST /life/enter（AgentPortable → Enter）。
+	// 同时登记各 World 的 Endpoint，使本进程发起 Travel 时能按 WorldKey 寻址（以后换真远程只改 URL）。
+	adapter := ec.NewEconomyAdapter(mod.Game())
+	lifeReg := life.NewRegistry()
+	lifeReg.Register(adapter)
+	lifeReg.SetEndpoint("economy", envOr("ECO_LIFE_URL", "http://localhost:19301/life"))
+	lifeReg.SetEndpoint("village", envOr("VILLAGE_LIFE_URL", "http://localhost:19200/life"))
+	lifeMux := http.NewServeMux()
+	// 跨进程 Life 端点：Village（或其他世界）POST /life/enter 把 Agent 落入本世界。
+	// 仅把“真正跨世界抵达”的旅客登记进 travelers，避免把本世界种子 Agent 误当成旅客来驱动/送回。
+	lifeMux.HandleFunc("/life/enter", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var p life.AgentPortable
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			http.Error(w, "bad portable: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adapter.Enter(p); err != nil {
+			http.Error(w, "enter failed: "+err.Error(), http.StatusConflict)
+			return
+		}
+		travelerMu.Lock()
+		travelers[p.AgentID] = true
+		travelerMu.Unlock()
+		var g int64
+		for _, a := range p.Assets {
+			if a.Kind == "gold" {
+				g += a.Qty
+			}
+		}
+		log.Printf("[economy] 收到跨世界旅客 %s（技能 %v，金币 %d）", p.Identity.Name, p.Skills, g)
+		writeJSONW(w, map[string]interface{}{"ok": true, "world": "economy"})
+	})
+	lifeMux.HandleFunc("/life/healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSONW(w, map[string]interface{}{"ok": true, "world": "economy"})
+	})
+	go func() {
+		if err := http.ListenAndServe(envOr("ECO_LIFE_ADDR", ":19301"), lifeMux); err != nil {
+			log.Printf("[economy] life 端点启动失败: %v", err)
+		}
+	}()
+	ecoURL, _ := lifeReg.Endpoint("economy")
+	vilURL, _ := lifeReg.Endpoint("village")
+	log.Printf("[economy] life 跨进程端点已就绪：本世界 %s，村庄 %s", ecoURL, vilURL)
+
 	useLLM := llmClient.Enabled()
 	if useLLM {
 		log.Printf("[economy] 已启用 LLM 决策（%s）", llmClient.ModelName())
@@ -119,6 +202,22 @@ func main() {
 		}
 	}()
 
+	// 跨进程 Traveler 驱动：本世界（Economy）自主接管“外来 Agent”（如从 Village 来的 Marcus）。
+	// 它不调用 Village 任何代码，只通过 Economy 的 Planner/Executor 让 Marcus 像普通 Agent 一样
+	// 决策、接工作、DoJob（金币/技能增长）；赚够后由 Life Runtime 经 HTTP 把他送回 Village。
+	go func() {
+		tk := time.NewTicker(5 * time.Second)
+		defer tk.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				driveEconomyTravelers(ctx, mod, adapter, lifeReg)
+			}
+		}
+	}()
+
 	// 经济观察台。
 	obsAddr := envOr("ECO_OBS_ADDR", ":19100")
 	obsSrv := economy.NewServer(mod)
@@ -137,6 +236,127 @@ func main() {
 
 	<-sig
 	log.Printf("[economy] 收到退出信号，正在停止…")
+}
+
+// driveEconomyTravelers 让每个“真正跨世界抵达”的旅客（travelers 中登记的 Agent）像普通
+// Economy Agent 一样自主工作；按时间节奏打几份工后，由 Life Runtime 送回 Village。
+// 注意：Economy 不持有 Village 的任何代码引用，所有跨世界动作都经 life.Registry 的 Endpoint（HTTP）。
+func driveEconomyTravelers(ctx context.Context, mod *economy.Module, adapter *ec.EconomyAdapter, reg *life.Registry) {
+	travelerMu.Lock()
+	ids := make([]life.AgentID, 0, len(travelers))
+	for id := range travelers {
+		ids = append(ids, id)
+	}
+	travelerMu.Unlock()
+	for _, stable := range ids {
+		driveOneTraveler(ctx, mod, adapter, reg, stable)
+	}
+}
+
+// driveOneTraveler 按“时间阶段状态机”推进一个跨世界旅客的旅程，使其有真实的跨世界节奏：
+// 抵达（发 arrive 事件）→ 安顿 travelArriveDelay → 分阶段打 travelTargetJobs 份工（每份间隔 travelWorkGap）
+// → 打完工再等 travelReturnDelay → 由 Life Runtime 送回 Village（村庄侧发 return 事件）。
+// 全程不 sleep，靠 5s tick + 时间戳判断推进，不会阻塞其他旅客。
+func driveOneTraveler(ctx context.Context, mod *economy.Module, adapter *ec.EconomyAdapter, reg *life.Registry, stable life.AgentID) {
+	local, ok := adapter.LocalID(stable)
+	if !ok {
+		return
+	}
+	raw, ok := adapter.StoreGet(local)
+	if !ok {
+		return
+	}
+	ag := raw.(*ec.Agent)
+
+	travelerMu.Lock()
+	st, ok := travelerStates[stable]
+	if !ok {
+		st = &travelerState{arrivedAt: time.Now()}
+		travelerStates[stable] = st
+	}
+	travelerMu.Unlock()
+	elapsed := time.Since(st.arrivedAt)
+
+	// 阶段 1：刚抵达，发一条“抵达经济世界”事件（仅一次），随后安顿一段时间。
+	if !st.greeted {
+		if vilURL, ok := reg.Endpoint("village"); ok {
+			_ = life.PostEvent(vilURL, life.PortableEvent{
+				Icon:  "🚉",
+				Type:  "arrive",
+				Actor: ag.Name,
+				Text:  ag.Name + " arrives in the Economy world, seeking work",
+			})
+		}
+		st.greeted = true
+		return
+	}
+	if elapsed < travelArriveDelay {
+		return
+	}
+
+	// 阶段 2：分阶段打工，每份工之间留出间隔，让 work 事件在时间轴上铺开。
+	if st.jobs < travelTargetJobs {
+		if st.jobs > 0 && elapsed < travelArriveDelay+time.Duration(st.jobs)*travelWorkGap {
+			return
+		}
+		vp, perr := mod.Perceive(ctx, sdk.Agent{ID: local, Name: ag.Name})
+		if perr != nil {
+			log.Printf("[economy] %s 感知失败: %v", ag.Name, perr)
+			return
+		}
+		v := vp.(*ec.Perception)
+		worked := false
+		for _, j := range v.OpenJobs {
+			if j.Skill == "engineer" && j.MinLevel <= ag.SkillLevel("engineer") {
+				// 必须先认领，DoJob 才会受理（经济世界工作流：open → claimed → done）
+				if !mod.Game().ClaimJob(local, j.ID) {
+					continue
+				}
+				reward, msg := mod.Game().DoJob(local, j.ID)
+				if reward > 0 {
+					st.jobs++
+					worked = true
+					adapter.NoteExperience(stable, life.PortableMemory{
+						Text: "worked in the Economy world as an engineer: " + msg,
+						Imp:  3,
+						Tag:  "work",
+					})
+					log.Printf("[economy] %s completed work: %s (+%d coins, balance %d, engineer Lv%d)", ag.Name, msg, reward, ag.Balance, ag.SkillLevel("engineer"))
+					// 把“工作”事件推回 Village 事件流（跨进程可见 depart/arrive/work/return）。
+					if vilURL, ok := reg.Endpoint("village"); ok {
+						_ = life.PostEvent(vilURL, life.PortableEvent{
+							Icon:  "🛠️",
+							Type:  "work",
+							Actor: ag.Name,
+							Text:  ag.Name + " (Economy world): " + msg,
+						})
+					}
+					break
+				}
+			}
+		}
+		if !worked {
+			log.Printf("[economy] %s 暂无可接工作，轻推市场", ag.Name)
+			mod.Game().SpawnJobs()
+		}
+		return
+	}
+
+	// 阶段 3：打够工，再等一会儿，然后返回 Village。
+	if elapsed < travelArriveDelay+time.Duration(travelTargetJobs)*travelWorkGap+travelReturnDelay {
+		return
+	}
+	if vilURL, ok := reg.Endpoint("village"); ok {
+		if tr, err := life.MoveRemote(adapter, vilURL, stable); err == nil {
+			log.Printf("[economy] %s 赚够 %d coins，返回村庄（%s）", ag.Name, ag.Balance, tr.Status)
+			travelerMu.Lock()
+			delete(travelers, stable)
+			delete(travelerStates, stable)
+			travelerMu.Unlock()
+		} else {
+			log.Printf("[economy] %s 返回村庄失败: %v", ag.Name, err)
+		}
+	}
 }
 
 // ensureAgents 创建或复用 n 个经济 Agent。

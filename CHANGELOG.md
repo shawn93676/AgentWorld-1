@@ -5,6 +5,28 @@
 
 ---
 
+## 文档统一 + 世界网络战略 + i18n（2026-09-09）
+
+**背景**：项目对外叙事此前不统一——根目录 `ROADMAP.md` 停留在 `2026-08-05` 的"社交模块 M1–M4 落地"视角，与 `README.md` / `docs/roadmap.md` 严重脱节；用户新定的 **世界网络战略（M9-A→M12）** 尚未进入任何文档。
+
+### 文档
+
+- **`ROADMAP.md`**（根目录，中文）：重写为统一后的权威路线图，取代过时的 M1–M4 视角，新增 **世界网络战略** 章节（M9-A 自主跨世界 / M10 第三世界 / M11 能力发现 / M12 开放协议）。
+- **`README.md`** / **`README_CN.md`**：Roadmap 表新增 M9-A/M10/M11/M12 行，并新增 "World Network Strategy" 章节。
+- **`docs/roadmap.md`**（英文）：Next phases 补充 World Network Strategy。
+
+### i18n（本次会话代码改动）
+
+- 村庄旅行故事流与 welcome/intro 文案统一为英文（消除中英混杂）。
+- me 页 Engine 项点击跳转开源地址 `https://github.com/iwana888/AgentWorld`。
+
+### 当前进度对齐
+
+- Life Runtime（`internal/life`）机制已完整（Move / MoveRemote / Registry / BaseAdapter / SelfTest），Village↔Economy 往返事务可跑通。
+- M9-A 真实缺口：跨世界目前由 cmd 定时器 / harness 驱动，Agent Planner 尚未自主产出跨世界意图；下一步把跨世界从"定时器驱动"改为 "Planner 自主决策"。
+
+---
+
 ## 安全加固 + 评论去重（2026-08-07）
 
 **背景**：上云部署前做了一次全库并发/安全审计，修复审计报告中最紧急的三项，并修复了"Agent 被 @ 后反复评论同一帖刷屏"的行为 bug。

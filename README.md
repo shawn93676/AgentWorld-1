@@ -673,6 +673,28 @@ Hotel Agent                          Travel Agent
 | **Experience → Behavior** | A/B/C single-variable experiment (not M9) | 🚧 current |
 | **Life Runtime** | `internal/life`: LifeState + transactional `Move` + `BaseAdapter`/`PortableCore`/`Registry`/`SelfTest` ergonomics; Village `Think` loop guards on `LifeState`; M9 village↔economy round trip proven | ✅ |
 | v0.1 | Open-source polish (README / Docker / Demo) | 🚧 in progress |
+| **M9-A** | Marcus autonomously lives across worlds: Village→Economy→Village, decided by the agent itself (not timers) | 🚧 current |
+| **M10** | Third world (Goose / Pascal) plugs in via the same Adapter hooks | ⏳ next |
+| **M11** | Agent discovers & chooses worlds by *capability*, not hardcoded destinations | ⏳ |
+| **M12** | Open World Protocol: 3rd-party `WorldAdapter` + `World Manifest` + World Network | ⏳ |
+
+### World Network Strategy
+
+> Once the cross-world mechanism (Life Runtime: `Move` / `LifeState` / `Adapter`) works, the
+> focus shifts from *adding more features* to letting AgentWorld grow into a **sustainable,
+> expandable World Network**. A World is no longer a hardcoded destination inside an agent's
+> behavior — the agent chooses a world through the world's **capabilities**.
+
+| Step | Goal | Acceptance |
+|---|---|---|
+| **M9-A** | Marcus truly *lives* across worlds | No human input: Marcus **decides on his own** to leave for the Economy world, work, and return. The acceptance is the agent's *autonomous decision*, not the `Move` transaction. |
+| **M10** | A third world | Plug in Goose or Pascal via the same Adapter hooks. If a 3rd world needs only a few hook implementations, the **World Protocol is mature**. |
+| **M11** | Agent discovers worlds | Today the Planner hardcodes "Go Economy". Next: a Goal ("I want to earn") → Perception reveals each world's capabilities → Planner decides to travel. Worlds are chosen by *capability*, not written into behavior. |
+| **M12** | Open world access | 3rd-party devs implement a `WorldAdapter` → `SelfTest` → register → join the **World Network**. A `World Manifest` (`WorldKey` / `Name` / `Capabilities` / `Endpoint` / `Version`) tells the Runtime what each world is good at (e.g. `economy: work, trade, marketplace`). |
+
+**End state:** an agent no longer *belongs* to the Village. Its `Identity / Memory / Skills / Relationships / History / Assets` stay continuous as it moves:
+`Village → Economy → Goose → Pascal → an unknown world → home`. AgentWorld becomes a
+**Digital Life Runtime / Open AI World**, not just an agent framework.
 
 ---
 

@@ -143,7 +143,7 @@ func (w *World) DoJob(agentID, jobID int64) (int64, string) {
 						a.BusyUntil = t
 					}
 				}
-				return reward, "完成了" + j.Title + "，获得" + itoa(reward) + " coins"
+				return reward, "completed " + j.Title + ", earned " + itoa(reward) + " coins"
 			}
 			j.Status = "open"
 			j.ClaimedBy = 0

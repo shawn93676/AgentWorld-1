@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -669,6 +671,11 @@ func (w *World) Chat(id int64, msg string) map[string]interface{} {
 	if msg == "" {
 		return nil
 	}
+	// 意图识别：玩家向村民要金币。文本是表达，Action 才是事实——
+	// 命中则直接走 Borrow 动作（真实移动金币），绝不把 LLM 的客套话当事实。
+	if amt, ok := parseBorrowIntent(msg); ok {
+		return w.borrowLocked(id, amt)
+	}
 	q, ok := w.spendActLocked()
 	if !ok {
 		return actDenied(q)
@@ -786,6 +793,111 @@ func (w *World) Gift(id int64, amount int64) map[string]interface{} {
 		"player_gold": w.player.Gold, "agent": w.brief(a), "quota": q,
 	}
 }
+
+// Borrow 玩家向村民讨/借金币（不记债务）。公开入口。
+func (w *World) Borrow(id int64, amount int64) map[string]interface{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.borrowLocked(id, amount)
+}
+
+// borrowLocked 真实移动金币：村民把金币转给玩家。须持锁调用。
+// 这是"事实"所在——LLM 文本里说的"我给你"不在此生效。
+func (w *World) borrowLocked(id int64, amount int64) map[string]interface{} {
+	a := w.agents[id]
+	if a == nil || a.Gone {
+		return nil
+	}
+	if amount <= 0 {
+		return nil
+	}
+	q, ok := w.spendActLocked()
+	if !ok {
+		return actDenied(q)
+	}
+	give := amount
+	if give > a.Money {
+		give = a.Money // 村民最多给出他身上所有的
+	}
+	if give <= 0 {
+		w.remember(a, "The Traveler asked me for gold, but my purse was empty.", 2)
+		w.addEvent(Event{Type: "player", Icon: "🪙", Actor: "The Traveler", Target: a.Name, Place: a.Place,
+			Text: fmt.Sprintf("The Traveler asked %s for gold, but %s had none to spare.", a.Name, a.Name),
+			Why:  []string{"Player request", fmt.Sprintf("%s's purse is empty", a.Name)}})
+		reply := pickStr(w.rng, []string{
+			"I wish I could, Traveler, but my purse is empty.",
+			"No coin to my name today — sorry.",
+		})
+		return map[string]interface{}{
+			"reply": reply, "money": a.Money, "player_gold": w.player.Gold,
+			"agent": w.brief(a), "quota": q,
+		}
+	}
+	a.Money -= give
+	w.player.Gold += give
+	w.player.Borrowed += give
+	pr := playerRel(a)
+	pr.Like = clamp(pr.Like+2, 0, 100)
+	pr.Trust = clamp(pr.Trust+1, 0, 100)
+	a.Mood = clamp(a.Mood+2, -100, 100)
+	w.rememberPlayer(a, fmt.Sprintf("The Traveler asked me for %d gold and I gave it. He needed it more than my purse did.", give), 3, "borrow")
+	w.addEvent(Event{Type: "player", Icon: "🤝", Actor: "The Traveler", Target: a.Name, Place: a.Place,
+		Text: fmt.Sprintf("%s gave the Traveler %d gold.", a.Name, give),
+		Why:  []string{"Player requested it", fmt.Sprintf("%s had %d gold before", a.Name, a.Money+give)}})
+	reply := pickStr(w.rng, []string{
+		fmt.Sprintf("Here, Traveler — %d gold. May it serve you well.", give),
+		fmt.Sprintf("Take %d gold. We look out for each other here.", give),
+	})
+	return map[string]interface{}{
+		"reply": reply, "money": a.Money, "player_gold": w.player.Gold,
+		"like": pr.Like, "trust": pr.Trust, "agent": w.brief(a), "quota": q,
+	}
+}
+
+// parseBorrowIntent 识别"玩家向村民要金币"的意图。命中返回金额。
+// 关键词须是"玩家接收"语义（借我/给我/讨/要），并带有金币意图或数字，
+// 以免"给我讲个故事"这类表达误触。
+func parseBorrowIntent(msg string) (int64, bool) {
+	receive := false
+	for _, k := range []string{"借我", "借点", "给我", "给我点", "讨", "要"} {
+		if strings.Contains(msg, k) {
+			receive = true
+			break
+		}
+	}
+	if !receive {
+		return 0, false
+	}
+	hasGold := strings.Contains(msg, "金币") || strings.Contains(msg, "金子") ||
+		strings.Contains(msg, "gold") || strings.Contains(msg, "coin") ||
+		strings.Contains(msg, "钱") || strings.Contains(msg, "币")
+	amt := extractGoldAmount(msg)
+	if !hasGold && amt <= 0 {
+		return 0, false
+	}
+	if amt <= 0 {
+		amt = 10 // "给我点金币" → 默认 10
+	}
+	return amt, true
+}
+
+// extractGoldAmount 从文本提取金币数：优先数字，其次单字中文数字。
+func extractGoldAmount(msg string) int64 {
+	if m := goldNumRe.FindStringSubmatch(msg); m != nil {
+		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			return n
+		}
+	}
+	for _, r := range msg {
+		if v, ok := cnNum[r]; ok {
+			return v
+		}
+	}
+	return 0
+}
+
+var goldNumRe = regexp.MustCompile(`(\d+)`)
+var cnNum = map[rune]int64{'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 
 // replyFor 生成回复：配置了 LLM 走 Level 2，否则走模板。
 func (w *World) replyFor(a *Agent, msg string) string {

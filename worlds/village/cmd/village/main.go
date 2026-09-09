@@ -30,8 +30,10 @@ import (
 	"agentworld/internal/agent"
 	"agentworld/internal/bus"
 	"agentworld/internal/db"
+	"agentworld/internal/life"
 	"agentworld/internal/llm"
 	"agentworld/worlds/village"
+	vv "agentworld/worlds/village/village"
 )
 
 func main() {
@@ -106,11 +108,40 @@ func main() {
 	}()
 
 	// 6) HTTP + SSE + 内嵌前端
-	srv := village.NewServer(hub)
+	// 跨进程 Life Registry：登记各 World 的 Endpoint，使本进程发起 Travel 时能按 WorldKey 寻址。
+	lifeReg := life.NewRegistry()
+	lifeReg.SetEndpoint("village", envOr("VILLAGE_LIFE_URL", "http://localhost:19200/life"))
+	lifeReg.SetEndpoint("economy", envOr("ECO_LIFE_URL", "http://localhost:19301/life"))
+	srv := village.NewServer(hub, lifeReg)
 	go func() {
 		if err := srv.Start(addr); err != nil && err.Error() != "http: Server closed" {
 			log.Printf("[village] HTTP 服务启动失败: %v", err)
 			cancel()
+		}
+	}()
+
+	// 演示模式：预创建演示世界（含铁匠 Marcus），供跨进程 Travel 扫描直接驱动。
+	if u := os.Getenv("VILLAGE_DEMO_UID"); u != "" {
+		if _, err := hub.Get(u); err != nil {
+			log.Printf("[village] 预创建演示世界失败: %v", err)
+		} else {
+			log.Printf("[village] 已预创建演示世界 uid=%s（铁匠 Marcus 就位）", u)
+		}
+	}
+
+	// 跨进程 Travel 扫描：当演示世界里的 Marcus 本地经济机会不足（金币未达目标）时，
+	// 由 Life Runtime 把他送到 Economy。回村后金币达标则不再出发（避免来回横跳）。
+	// 注意：Village 不调用 Economy 任何代码，只经 life.Registry 的 Endpoint（HTTP）移动 Agent。
+	go func() {
+		tk := time.NewTicker(15 * time.Second)
+		defer tk.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				scanVillageTravel(hub, lifeReg)
+			}
 		}
 	}()
 
@@ -128,6 +159,48 @@ func main() {
 	log.Printf("[village] 收到退出信号，保存所有世界快照…")
 	hub.SaveAll()
 	cancel()
+}
+
+// scanVillageTravel 让演示世界里的 Marcus 在本地经济机会不足时，自主前往 Economy 谋生。
+// 规则：Marcus 在 Village 且金币 < 380（目标未达成）→ 由 Life Runtime 送他去 Economy；
+// 回村后金币 >= 380 → 不再出发。整个过程 Village 不持有 Economy 的任何代码引用。
+func scanVillageTravel(hub *village.Hub, reg *life.Registry) {
+	uid := hub.DefaultUID()
+	if uid == "" {
+		return
+	}
+	inst, err := hub.Get(uid)
+	if err != nil {
+		return
+	}
+	local, ok := inst.World.FindAgentByName("John") // 铁匠 Marcus
+	if !ok {
+		return
+	}
+	stable := life.StableID("village", local)
+	if _, ok := inst.Adapter.LocalID(stable); !ok {
+		return // 不在村（旅行中/已离场）
+	}
+	raw, ok := inst.Adapter.StoreGet(local)
+	if !ok {
+		return
+	}
+	ag := raw.(*vv.Agent)
+	// 目标：把铁匠技艺练到 Lv80 以上（去经济世界打过工即达成）。避免依赖精确金币数，
+	// 也防止来回横跳：回村后技艺已提升，便不再出发。
+	if lvl, ok := ag.Skills["Blacksmithing"]; ok && lvl >= 80 {
+		return
+	}
+	ecoURL, ok := reg.Endpoint("economy")
+	if !ok {
+		return
+	}
+	if tr, err := life.MoveRemote(inst.Adapter, ecoURL, stable); err == nil {
+		inst.World.EmitEvent("departure", "🚀", ag.Name, "Blacksmith "+ag.Name+" leaves the village for the Economy world", "goal: improve the economy")
+		log.Printf("[village] Marcus 出发去经济世界（%s）", tr.Status)
+	} else {
+		log.Printf("[village] Marcus 出发失败: %v", err)
+	}
 }
 
 func envOr(k, def string) string {

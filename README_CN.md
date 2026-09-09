@@ -285,8 +285,25 @@ Hotel Agent                          Travel Agent
 | M9–M10 | Capability（MCP）/ Module SDK | ✅ |
 | M11 | 官方模块 SDK 化（Dogfooding） | ✅ |
 | M12 | ACL / Registry / Selection / Federation（跨实例，含共享密钥鉴权） | ✅ |
-| v0.1 | 开源整理（README / Docker / Demo）+ 安全加固（JWT / Federation 签名 / 并发锁） | 🚧 进行中 |
-| **Life Runtime** | `internal/life`：LifeState 生命周期 + 事务化跨 World `Move`（补 `internal/agent`+`sdk`+`scheduler` 之不足） | 🚧 进行中 |
+| v0.1 | 开源整理（README / Docker / Demo）+ 安全加固 + i18n 统一 | 🚧 进行中 |
+| **M9-A** | Marcus 自主跨世界生活：Village→Economy→Village，由 Agent 自己决定（非定时器） | 🚧 当前 |
+| **M10** | 第三个 World（Goose / Pascal）用同一套 Adapter hook 接入 | ⏳ 下一步 |
+| **M11** | Agent 按 *能力* 自主发现 / 选择 World，而非写死目的地 | ⏳ |
+| **M12** | 开放 World Protocol：第三方 `WorldAdapter` + `World Manifest` + World Network | ⏳ |
+
+### 世界网络战略（World Network Strategy）
+
+> 跨世界机制（Life Runtime 的 `Move` / `LifeState` / `Adapter`）做通之后，重心从"继续堆功能"转向——**让 AgentWorld 形成可持续扩张的世界网络（World Network）**。World 不再是写死在 Agent 行为里的目的地，而是 Agent 通过 World 的**能力（capabilities）**自主选择的世界。
+
+| 步骤 | 目标 | 验收标准 |
+|---|---|---|
+| **M9-A** Marcus 自主跨世界生活 | Village → 自己决定 → Economy → 工作（赚钱/技能/记忆）→ 自己决定 → Village | **玩家不操作**，Marcus *自己决定*出门打工、自己决定回家。验收点是 Agent 的**自主决策**，而非 `Move` 事务。 |
+| **M10** 第三个 World | 不做新功能，直接接入 Goose World 或 Pascal World | 第三个 World 接入只需实现 Adapter 的几个 hook → 说明 **World Protocol 已成熟**。 |
+| **M11** Agent 自主发现 World | 现在 Planner 硬编码"去 Economy"；以后 Goal（"我想赚钱"）→ Perception 发现各 World 能力 → Planner 决定 Travel | World 由 Agent *按能力选择*，而非写死在行为里。 |
+| **M12** World 开放接入 | 第三方开发者：实现 `WorldAdapter` → `SelfTest` → Register → 加入 **World Network** | 定义 **World Manifest**（`WorldKey` / `Name` / `Capabilities` / `Endpoint` / `Version`），如 `economy: capabilities: work, trade, marketplace`。 |
+
+**终极形态**：Agent 不再"属于" Village，它的 `Identity / Memory / Skills / Relationships / History / Assets` 在流动中始终连续：`出生 → Village → Economy → Goose → Pascal → 陌生 World → 回家`。AgentWorld 从 **AI Agent Framework** 升维为 **Digital Life Runtime / Open AI World**。
+| **Life Runtime** | `internal/life`：LifeState 生命周期 + 事务化跨 World `Move`（补 `internal/agent`+`sdk`+`scheduler` 之不足） | ✅ 机制 |
 | Phase 2 | SDK 正式化（目录结构 agentworld/sdk + runtime + modules） | ⏳ |
 | Phase 3+ | Marketplace / Agent 级 Reputation / Memory 升级 / 3D Explorer | ⏳ |
 
