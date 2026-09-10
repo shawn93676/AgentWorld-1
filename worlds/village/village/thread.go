@@ -255,7 +255,7 @@ func (w *World) genFund() (Thread, bool) {
 	}
 	for _, id := range w.agentOrd {
 		a := w.agents[id]
-		if a == nil || a.Gone || a.GoalTarget <= 0 || a.GoalDone || w.hasOpenActorLocked(a.Name) {
+		if a == nil || a.Gone || a.GoalTarget <= 0 || a.GoalDone || a.GoalAbandoned || w.hasOpenActorLocked(a.Name) {
 			continue
 		}
 		gap := a.GoalTarget - a.Money
@@ -336,9 +336,19 @@ func (w *World) settleThreadLocked(t *Thread, choice string) {
 	if t.Outcome == "" {
 		t.Outcome = "The matter quietly faded."
 	}
+	tr := &WhyTrace{
+		Rule:     "thread.choice",
+		Cause:    []string{fmt.Sprintf("kind=%s", t.Kind), fmt.Sprintf("choice=%s", choice)},
+		Recent:   []string{t.Title},
+		Decision: fmt.Sprintf("resolved thread with choice: %s", choice),
+	}
 	w.addEvent(Event{Type: "thread_done", Icon: "✅", Actor: t.Actor, Target: t.Target,
 		Text: t.Outcome,
-		Why:  []string{"A promise came due", "Choice: " + choice}})
+		Why:  []string{"A promise came due", "Choice: " + choice},
+		Trace: tr})
+	if t.Actor != "" {
+		w.logWhy(t.Actor, "thread.choice", tr, trunc(t.Outcome, 80))
+	}
 }
 
 func (w *World) settleDebtLocked(t *Thread, choice string) {
@@ -422,7 +432,7 @@ func (w *World) settleDebtLocked(t *Thread, choice string) {
 
 func (w *World) settleFundLocked(t *Thread, choice string) {
 	a := w.agentByName(t.Actor)
-	if a == nil || a.Gone || a.GoalDone {
+	if a == nil || a.Gone || a.GoalDone || a.GoalAbandoned {
 		t.Outcome = "The matter quietly faded."
 		return
 	}

@@ -1,6 +1,9 @@
 package village
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // scarcity.go —— 稀缺与不可逆：让玩家的每一个选择都有代价。
 //
@@ -27,6 +30,10 @@ const (
 	warnDespair   = -70
 	minVillagers  = 3 // 村庄至少保留这么多村民，世界不会空掉
 	fateGraceDays = 3 // 开局缓冲天数
+
+	// 放弃目标（goal.abandoned）的阈值——与离村不同，放弃是可逆的（一笔横财可重燃希望）。
+	giveUpMood  = -55 // 心情跌到此线且仍远离目标 → 绝望性放弃
+	giveUpStall = 40  // 连续这么多天没有向目标"刷新最高积蓄" → 停滞性放弃
 )
 
 // Quota 玩家每日行动额度。
@@ -94,11 +101,19 @@ func (w *World) checkFatesLocked() {
 		if a == nil || a.Gone {
 			continue
 		}
-		if a.Money <= leaveDebt || a.Mood <= leaveDespair {
+		// 判定触发的是哪条不可逆规则（债务线 or 绝望线）
+		reason := ""
+		switch {
+		case a.Money <= leaveDebt:
+			reason = "debt"
+		case a.Mood <= leaveDespair:
+			reason = "despair"
+		}
+		if reason != "" {
 			if w.aliveCountLocked() <= minVillagers {
 				return // 保底：不让村庄空掉
 			}
-			w.departLocked(a)
+			w.departLocked(a, reason)
 			continue
 		}
 		// 还没到不可逆的那一步，但可能已在边缘：给一个能被救回来的信号
@@ -129,17 +144,29 @@ func (w *World) warnOfLeaving(a *Agent) {
 		line = fmt.Sprintf("%s barely speaks these days. There is a going-away look in his eyes.", a.Name)
 	}
 	w.remember(a, "I am running out of reasons to stay. Nobody seems to notice.", 4)
+	tr := &WhyTrace{
+		Rule:  "scarcity.warnOfLeaving",
+		Cause: []string{
+			fmt.Sprintf("money=%d (warn line %d, depart line %d)", a.Money, warnDebt, leaveDebt),
+			fmt.Sprintf("mood=%d (warn line %d, depart line %d)", a.Mood, warnDespair, leaveDespair),
+		},
+		Recent:   recentCauses(a),
+		Decision: "warning only — still rescuable (gift / work / influence can pull him back)",
+	}
 	w.addEvent(Event{Type: "despair", Icon: "🕯️", Actor: a.Name, Place: a.Place, Text: line,
 		Why: []string{"Running out of money and spirit",
-			fmt.Sprintf("Purse: %d gold · Mood: %s", a.Money, MoodEmoji(a.Mood))}})
+			fmt.Sprintf("Purse: %d gold · Mood: %s", a.Money, MoodEmoji(a.Mood))},
+		Trace: tr})
 }
 
 // departLocked 村民离开村庄（不可逆）。债务随之作废：他欠的钱永远收不回来。
-func (w *World) departLocked(a *Agent) {
+// reason 区分触发线："debt"（负债）或 "despair"（绝望）。
+func (w *World) departLocked(a *Agent, reason string) {
 	a.Gone = true
 	a.ActKind = "gone"
 	a.Action = "Has left Willow Creek"
 	a.Plan = nil
+	a.DepartDay = w.Day()
 
 	// 1) 他欠别人的：债主的钱真的没了
 	lost := []int64{}
@@ -177,8 +204,53 @@ func (w *World) departLocked(a *Agent) {
 	if totalLost > 0 {
 		suffix = fmt.Sprintf(" and %d gold of debts died with him", totalLost)
 	}
+
+	// 结构化因果链：让"为什么走了"可直接追溯（持久化在 agent 上，不依赖事件缓冲）。
+	tr := &WhyTrace{
+		Rule: "scarcity.departLocked",
+		Cause: []string{
+			fmt.Sprintf("money=%d (debt threshold=%d)", a.Money, leaveDebt),
+			fmt.Sprintf("mood=%d (despair threshold=%d)", a.Mood, leaveDespair),
+			"triggered by=" + reason,
+		},
+		Recent:   recentCauses(a),
+		Decision: "departure triggered by scarcity rule (irreversible)",
+	}
+	a.DepartTrace = tr
+
 	w.addEvent(Event{Type: "gone", Icon: "🚪", Actor: a.Name, Place: a.Place,
 		Text: fmt.Sprintf("%s has left Willow Creek in the night. The cottage is cold%s.", a.Name, suffix),
 		Why: []string{"Debt and despair",
-			fmt.Sprintf("Left with %d gold · Mood %s", a.Money, MoodEmoji(a.Mood))}})
+			fmt.Sprintf("Left with %d gold · Mood %s", a.Money, MoodEmoji(a.Mood))},
+		Trace: tr})
+	w.logWhy(a.Name, "departure", tr, fmt.Sprintf("%s left Willow Creek", a.Name))
+}
+
+// recentCauses 从 Agent 近期记忆中抽取"导致他走到这一步"的前因链，
+// 用于 WhyTrace.Recent。优先给出结构化的欠租次数，再补以记忆里的关键片段。
+func recentCauses(a *Agent) []string {
+	var causes []string
+	if a.RentMisses > 0 {
+		causes = append(causes, fmt.Sprintf("rent unpaid ×%d", a.RentMisses))
+	}
+	// 记忆里标记"经济压力 / 空钱袋 / 没人注意"的片段即为前因素材。
+	kw := []string{"rent", "pouch is empty", "couldn't pay", "running out of reasons", "owe", "despair", "no coin", "empty"}
+	seen := map[string]bool{}
+	for _, m := range a.Mem {
+		t := strings.ToLower(m.Text)
+		for _, k := range kw {
+			if strings.Contains(t, k) && !seen[k] {
+				seen[k] = true
+				causes = append(causes, m.Text)
+				break
+			}
+		}
+		if len(causes) >= 6 {
+			break
+		}
+	}
+	if len(causes) == 0 {
+		causes = append(causes, "no notable prior memories")
+	}
+	return causes
 }

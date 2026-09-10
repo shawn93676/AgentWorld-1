@@ -253,9 +253,10 @@ func driveEconomyTravelers(ctx context.Context, mod *economy.Module, adapter *ec
 	}
 }
 
-// driveOneTraveler 按“时间阶段状态机”推进一个跨世界旅客的旅程，使其有真实的跨世界节奏：
+// driveOneTraveler 推进一个跨世界旅客的旅程，使其有真实的跨世界节奏：
 // 抵达（发 arrive 事件）→ 安顿 travelArriveDelay → 分阶段打 travelTargetJobs 份工（每份间隔 travelWorkGap）
-// → 打完工再等 travelReturnDelay → 由 Life Runtime 送回 Village（村庄侧发 return 事件）。
+// → 打够既定份数（旅客“自己觉得够了”）→ 由 Life Runtime 送回 Village（村庄侧发 return 事件）。
+// 返回由工作量（Agent 自身成就）驱动，而非固定时钟等待（M9-A）。
 // 全程不 sleep，靠 5s tick + 时间戳判断推进，不会阻塞其他旅客。
 func driveOneTraveler(ctx context.Context, mod *economy.Module, adapter *ec.EconomyAdapter, reg *life.Registry, stable life.AgentID) {
 	local, ok := adapter.LocalID(stable)
@@ -342,13 +343,14 @@ func driveOneTraveler(ctx context.Context, mod *economy.Module, adapter *ec.Econ
 		return
 	}
 
-	// 阶段 3：打够工，再等一会儿，然后返回 Village。
-	if elapsed < travelArriveDelay+time.Duration(travelTargetJobs)*travelWorkGap+travelReturnDelay {
+	// 阶段 3：打够既定份数的工 → 旅客“自己觉得够了”，自主返回 Village。
+	// 返回由工作量（Agent 自身成就）驱动，而非固定时钟等待。
+	if st.jobs < travelTargetJobs {
 		return
 	}
 	if vilURL, ok := reg.Endpoint("village"); ok {
 		if tr, err := life.MoveRemote(adapter, vilURL, stable); err == nil {
-			log.Printf("[economy] %s 赚够 %d coins，返回村庄（%s）", ag.Name, ag.Balance, tr.Status)
+			log.Printf("[economy] %s 打够 %d 份工，自己决定返回村庄（%s）", ag.Name, st.jobs, tr.Status)
 			travelerMu.Lock()
 			delete(travelers, stable)
 			delete(travelerStates, stable)

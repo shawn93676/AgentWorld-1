@@ -26,6 +26,7 @@ type Activity struct {
 	Spend  int64  // 立即支出
 	Reason []string
 	TalkTo string // social 特殊目标（Influence 计划用）
+	Cross  bool   // 跨世界出行（目标非本村地点，需经 Mover 真正移动）
 }
 
 // ---- 感知（模块层用） ----
@@ -117,6 +118,7 @@ func (w *World) Tick() {
 			a.rentPaidDay = day
 			if a.Money < 0 {
 				a.Mood -= 8
+				a.RentMisses++
 				w.remember(a, "I couldn't pay rent yesterday. The pouch is empty.", 3)
 			}
 		}
@@ -125,6 +127,7 @@ func (w *World) Tick() {
 			Why:  []string{"Daily expense", "Keeps the economy moving"}})
 		w.runEchoesLocked()  // 长程因果：玩家过去的干预在若干天后回响
 		w.checkFatesLocked() // 稀缺一侧：债务与绝望会把人逼走（不可逆）
+		w.checkGoalsLocked() // 目标一侧：绝望或长期停滞会让村民放弃目标（可逆）
 	}
 
 	// 能量/心情漂移 + 活动完成结算
@@ -160,7 +163,42 @@ func (w *World) Tick() {
 
 		switch {
 		case a.ActKind == "travel" && w.now >= a.ActionUntil:
-			// 到达
+			// 跨世界出行：到达的是另一个 World，由注入的 Mover 真正发起 MoveRemote，
+			// 并更新 LifeState（离开本村）。成功后本 Agent 不再参与本世界推进。
+			if a.Crossing {
+				a.Crossing = false
+				dest := a.TravelTo
+				a.TravelTo = ""
+				if w.mover != nil {
+					// 不能在 Tick 持锁期间直接发起跨世界 MoveRemote（adapter.Leave 会回锁
+					// World，造成死锁）。改为脱离锁的 goroutine 执行，并标记 ActKind 防止 Tick
+					// 在本 tick 内重复处理该 Agent。
+					a.ActKind = "departing"
+					name, localID, toWorld := a.Name, a.ID, dest
+					go func() {
+						if err := w.mover(localID, toWorld); err == nil {
+							w.EmitEvent("departure", "🚀", name,
+								"Blacksmith "+name+" leaves the village for the Economy world",
+								"decided to seek work and skill abroad")
+						} else {
+							w.EmitEvent("departure", "⚠️", name,
+								name+" wanted to leave but the road was closed",
+								err.Error())
+							w.mu.Lock()
+							a.ActKind = "idle"
+							a.Due = true
+							w.mu.Unlock()
+						}
+					}()
+				} else {
+					// 未注入跨世界 Mover：本次不跨世界，回到可决策状态稍后重试。
+					w.EmitEvent("departure", "⚠️", a.Name, a.Name+" wanted to leave but cross-world is not configured")
+					a.ActKind = "idle"
+					a.Due = true
+				}
+				break
+			}
+			// 本地到达
 			a.Place = a.TravelTo
 			a.TravelTo = ""
 			dest := w.placeName(a.Place)
@@ -204,20 +242,96 @@ func (w *World) settleWork(a *Agent) {
 		fmt.Sprintf("Occupation: %s", a.Occupation),
 		fmt.Sprintf("Worked a full stint at the %s", w.placeName(a.Workplace)),
 	}
-	if a.GoalTarget > 0 && !a.GoalDone {
+	if a.GoalTarget > 0 && !a.GoalDone && !a.GoalAbandoned {
 		why = append(why, fmt.Sprintf("Saving for \"%s\" (%d/%d gold)", a.Goal, a.Money, a.GoalTarget))
 	}
 	w.addEvent(Event{Type: "economy", Icon: "💰", Actor: a.Name, Place: a.Place,
 		Text: fmt.Sprintf("%s finished a stint of work and earned %d gold.", a.Name, wage),
 		Why:  why})
-	if a.GoalTarget > 0 && !a.GoalDone && a.Money >= a.GoalTarget {
+	if a.GoalTarget > 0 && !a.GoalDone && !a.GoalAbandoned && a.Money >= a.GoalTarget {
 		a.GoalDone = true
+		tr := &WhyTrace{
+			Rule:     "goal.completed",
+			Cause:    []string{fmt.Sprintf("money=%d (target %d)", a.Money, a.GoalTarget), "savings reached threshold"},
+			Recent:   []string{fmt.Sprintf("Saving for \"%s\" (%d/%d gold)", a.Goal, a.Money, a.GoalTarget)},
+			Decision: fmt.Sprintf("goal completed: %s", a.Goal),
+		}
 		w.addEvent(Event{Type: "milestone", Icon: "🎉", Actor: a.Name, Place: a.Place,
 			Text: fmt.Sprintf("%s has finally saved enough to %s!", a.Name, lowerFirst(a.Goal)),
 			Why: []string{fmt.Sprintf("Goal reached: %d gold", a.GoalTarget),
-				"Months of honest work"}})
+				"Months of honest work"},
+			Trace: tr})
 		w.remember(a, fmt.Sprintf("I finally saved %d gold. My dream is within reach!", a.GoalTarget), 5)
+		w.logWhy(a.Name, "goal.completed", tr, a.Goal)
 	}
+}
+
+// checkGoalsLocked 每日检查：村民是否该放弃目标（goal.abandoned）。
+// 与离村不同，放弃是可逆的——一笔横财或心情回暖、重新攒钱，都能重燃希望。
+func (w *World) checkGoalsLocked() {
+	if w.Day() <= fateGraceDays {
+		return
+	}
+	for _, id := range w.agentOrd {
+		a := w.agents[id]
+		if a == nil || a.Gone || a.GoalTarget <= 0 || a.GoalDone {
+			continue
+		}
+		// 已放弃者：检查是否因时来运转而重燃希望。
+		if a.GoalAbandoned {
+			if a.Money >= a.GoalTarget {
+				a.GoalAbandoned, a.goalBest, a.goalStallDays = false, a.Money, 0
+			} else if a.Mood > giveUpMood && a.Money > a.goalBest {
+				a.GoalAbandoned, a.goalBest, a.goalStallDays = false, a.Money, 0
+			}
+			continue
+		}
+		if a.Money >= a.GoalTarget {
+			continue // 已完成由 settleWork 处理
+		}
+		// 进度判定：刷新历史最高积蓄则算有进展，否则停滞天数 +1。
+		if a.Money > a.goalBest {
+			a.goalBest, a.goalStallDays = a.Money, 0
+		} else {
+			a.goalStallDays++
+		}
+		gap := a.GoalTarget - a.Money
+		// 判定触发线：绝望 or 停滞。
+		trigger := ""
+		switch {
+		case a.Mood <= giveUpMood:
+			trigger = "hopelessness"
+		case a.goalStallDays >= giveUpStall:
+			trigger = "stagnation"
+		}
+		if trigger == "" {
+			continue
+		}
+		w.abandonGoalLocked(a, trigger, gap)
+	}
+}
+
+// abandonGoalLocked 村民放弃目标（goal.abandoned）。产出结构化因果链，便于事后追溯。
+func (w *World) abandonGoalLocked(a *Agent, trigger string, gap int64) {
+	a.GoalAbandoned = true
+	tr := &WhyTrace{
+		Rule: "goal.abandoned",
+		Cause: []string{
+			fmt.Sprintf("money=%d (target %d, gap %d)", a.Money, a.GoalTarget, gap),
+			fmt.Sprintf("mood=%d (give-up line %d)", a.Mood, giveUpMood),
+			fmt.Sprintf("no_progress_days=%d (give-up line %d)", a.goalStallDays, giveUpStall),
+			"triggered_by=" + trigger,
+		},
+		Recent:   recentCauses(a),
+		Decision: fmt.Sprintf("goal abandoned: %s — no longer pursued (reversible by a change in fortune)", a.Goal),
+	}
+	w.addEvent(Event{Type: "despair", Icon: "💔", Actor: a.Name, Place: a.Place,
+		Text: fmt.Sprintf("%s has given up on %s. The dream is set aside, perhaps forever.", a.Name, lowerFirst(a.Goal)),
+		Why: []string{"Lost hope of reaching the goal",
+			fmt.Sprintf("Saved %d of %d gold · Mood %s", a.Money, a.GoalTarget, MoodEmoji(a.Mood))},
+		Trace: tr})
+	w.remember(a, fmt.Sprintf("I've stopped chasing %s. It was never going to happen.", lowerFirst(a.Goal)), 4)
+	w.logWhy(a.Name, "goal.abandoned", tr, a.Goal)
 }
 
 // settleRepair 修好 Market。
@@ -503,6 +617,20 @@ func (w *World) decide(a *Agent) *Activity {
 				fmt.Sprintf("Bedtime is %02d:00", a.BedHour), "Sleep restores energy"}}
 	}
 
+	// 2) 跨世界出行（M9-A：Agent 自主决策，取代外部定时器扫描）
+	// 铁匠在本地技艺未精时，自主决定去 Economy 世界谋生/精进；回村后技艺已提升便不再出发。
+	if w.mover != nil && a.Occupation == "Blacksmith" && a.ActKind != "travel" {
+		if top, lv := topSkill(a); top == "Blacksmithing" && lv < 80 {
+			return &Activity{Kind: "travel", Place: "economy", Cross: true, At: now,
+				Until: now + w.travelTime(a.Place, "economy"),
+				Text:  "Setting out for the Economy world to seek work and skill",
+				Reason: []string{
+					fmt.Sprintf("My smithing is only Lv%d — there is still much to learn", lv),
+					"The Economy world pays for a craftsman's skill",
+				}}
+		}
+	}
+
 	// 2) 执行玩家 Influence 计划（G0 §8-③：Agent 可以拒绝，接受了就真的去做）
 	if a.Plan != nil {
 		plan := a.Plan
@@ -551,7 +679,7 @@ func (w *World) decide(a *Agent) *Activity {
 		if a.Money < 15 {
 			p += 0.25
 		}
-		if a.GoalDone {
+		if a.GoalDone || a.GoalAbandoned {
 			p -= 0.25
 		}
 		if a.Mood < -30 {
@@ -559,9 +687,9 @@ func (w *World) decide(a *Agent) *Activity {
 		}
 		if w.rng.Float64() < p {
 			reason := []string{fmt.Sprintf("Work hours (%02d:00)", hour)}
-			if a.GoalTarget > 0 && !a.GoalDone {
+			if a.GoalTarget > 0 && !a.GoalDone && !a.GoalAbandoned {
 				reason = append(reason, fmt.Sprintf("Saving for \"%s\" (%d/%d gold)", a.Goal, a.Money, a.GoalTarget))
-			} else if a.GoalTarget == 0 {
+			} else if a.GoalTarget == 0 || a.GoalAbandoned {
 				reason = append(reason, "Duty and pride in the craft")
 			}
 			if a.Money < 15 {
@@ -624,6 +752,7 @@ func (w *World) ApplyDecision(id int64, act *Activity) string {
 		// 出发：先走，到达后（Tick）再 applyAct
 		a.ActKind = "travel"
 		a.TravelTo = act.Place
+		a.Crossing = act.Cross
 		a.NextAct = act
 		a.Action = "Walking to the " + w.placeName(act.Place)
 		a.ActionUntil = w.now + w.travelTime(a.Place, act.Place)
@@ -645,6 +774,7 @@ func (w *World) applyAct(a *Agent, act *Activity, arrived bool) {
 	a.Action = act.Text
 	a.ActionUntil = act.Until
 	a.TravelTo = ""
+	a.Crossing = false
 	a.NextAct = nil
 	a.Due = false
 	verb := map[string]string{
@@ -727,6 +857,7 @@ func (w *World) Influence(id int64, advice string) map[string]interface{} {
 	}
 	accepted := w.rng.Float64() < p
 	var reply string
+	infStrength := int(p * 100)
 	if accepted {
 		a.Plan = &Plan{Text: advice, GoTo: goTo, TalkTo: talkTo, DueDay: w.Day() + 1}
 		pr.Like = clamp(pr.Like+3, 0, 100)
@@ -736,17 +867,33 @@ func (w *World) Influence(id int64, advice string) map[string]interface{} {
 			"You think so? Well... alright, I'll consider it.",
 			"Coming from you, I'll trust that. Let's see.",
 		})
+		tr := &WhyTrace{
+			Rule:     "influence.accept",
+			Cause:    []string{fmt.Sprintf("trust=%d", pr.Trust), fmt.Sprintf("influence_strength=%d", infStrength), fmt.Sprintf("grit=%d", int(a.Grit*100))},
+			Recent:   recentPlayerMemories(a, 2),
+			Decision: "accepted player's influence",
+		}
 		w.rememberPlayer(a, "The Traveler suggested: "+trunc(advice, 80)+". I said I'd try.", 3, "advice")
 		w.addEvent(Event{Type: "player", Icon: "✅", Actor: "The Traveler", Target: a.Name, Place: a.Place,
 			Text: fmt.Sprintf("The Traveler advised %s: \"%s\" — %s agreed to consider it.", a.Name, trunc(advice, 60), a.Name),
-			Why:  []string{"Player influence", fmt.Sprintf("Accept chance %.0f%%", p*100)}})
+			Why:  []string{"Player influence", fmt.Sprintf("Accept chance %.0f%%", p*100)},
+			Trace: tr})
+		w.logWhy(a.Name, "influence.accept", tr, trunc(advice, 60))
 	} else {
 		pr.Like = clamp(pr.Like-1, 0, 100)
 		reply = w.rejectLine(a)
+		tr := &WhyTrace{
+			Rule:     "influence.reject",
+			Cause:    []string{fmt.Sprintf("trust=%d", pr.Trust), fmt.Sprintf("influence_strength=%d", infStrength), fmt.Sprintf("grit=%d", int(a.Grit*100))},
+			Recent:   recentPlayerMemories(a, 2),
+			Decision: "rejected player's influence (grit too high / trust too low)",
+		}
 		w.rememberPlayer(a, "The Traveler suggested: "+trunc(advice, 80)+". I said no.", 2, "refuse")
 		w.addEvent(Event{Type: "player", Icon: "❌", Actor: "The Traveler", Target: a.Name, Place: a.Place,
 			Text: fmt.Sprintf("The Traveler advised %s: \"%s\" — %s refused.", a.Name, trunc(advice, 60), a.Name),
-			Why:  []string{"Player influence rejected", fmt.Sprintf("%s is stubborn (%d%% grit)", a.Name, int(a.Grit*100))}})
+			Why:  []string{"Player influence rejected", fmt.Sprintf("%s is stubborn (%d%% grit)", a.Name, int(a.Grit*100))},
+			Trace: tr})
+		w.logWhy(a.Name, "influence.reject", tr, trunc(advice, 60))
 	}
 	return map[string]interface{}{
 		"accepted": accepted, "reply": reply, "probability": p,
@@ -777,8 +924,10 @@ func (w *World) Gift(id int64, amount int64) map[string]interface{} {
 	a.Mood = clamp(a.Mood+10, -100, 100)
 	w.rememberPlayer(a, fmt.Sprintf("The Traveler gave me %d gold. I won't forget this kindness.", amount), 4, "gift")
 	goalLine := ""
-	if a.GoalTarget > 0 && !a.GoalDone {
+	if a.GoalTarget > 0 && !a.GoalDone && !a.GoalAbandoned {
 		goalLine = fmt.Sprintf(" Now %d/%d toward \"%s\".", a.Money, a.GoalTarget, a.Goal)
+	} else if a.GoalAbandoned {
+		goalLine = " (He has given up on his dream, though.)"
 	}
 	w.addEvent(Event{Type: "player", Icon: "🎁", Actor: "The Traveler", Target: a.Name, Place: a.Place,
 		Text: fmt.Sprintf("The Traveler gave %s %d gold.%s", a.Name, amount, goalLine),
@@ -919,7 +1068,11 @@ func (w *World) chatSystem(a *Agent) string {
 	fmt.Fprintf(&b, "Gold: %d. Energy: %d/100. Mood: %s. Currently: %s at the %s.\n",
 		a.Money, a.Energy, MoodEmoji(a.Mood), strings.ToLower(a.Action), w.placeName(a.Place))
 	if a.GoalTarget > 0 {
-		fmt.Fprintf(&b, "Dream: %s (saved %d/%d gold).\n", a.Goal, a.Money, a.GoalTarget)
+		if a.GoalAbandoned {
+			fmt.Fprintf(&b, "Dream: %s — ABANDONED (saved %d/%d gold before giving up).\n", a.Goal, a.Money, a.GoalTarget)
+		} else {
+			fmt.Fprintf(&b, "Dream: %s (saved %d/%d gold).\n", a.Goal, a.Money, a.GoalTarget)
+		}
 	} else {
 		fmt.Fprintf(&b, "Ambition: %s\n", a.Goal)
 	}
@@ -959,13 +1112,19 @@ func (w *World) templateReply(a *Agent, msg string) string {
 	}
 	switch {
 	case containsAny(lower, "money", "gold", "rich", "coin"):
-		if a.GoalTarget > 0 {
+		if a.GoalTarget > 0 && !a.GoalAbandoned {
 			return fmt.Sprintf("I've got %d gold. %d more and my dream of %s comes true.", a.Money, max64(0, a.GoalTarget-a.Money), lowerFirst(a.Goal))
+		}
+		if a.GoalAbandoned {
+			return fmt.Sprintf("Coin comes and goes. Right now I'm holding %d gold — and no dream worth saving for.", a.Money)
 		}
 		return fmt.Sprintf("Coin comes and goes. Right now I'm holding %d gold.", a.Money)
 	case containsAny(lower, "dream", "goal", "shop", "ambition", "future", "want"):
-		if a.GoalTarget > 0 {
+		if a.GoalTarget > 0 && !a.GoalAbandoned {
 			return fmt.Sprintf("%s. I've saved %d of %d gold so far. Every day counts.", a.Goal, a.Money, a.GoalTarget)
+		}
+		if a.GoalAbandoned {
+			return fmt.Sprintf("%s used to be my dream. I've set it aside. Don't remind me.", a.Goal)
 		}
 		return a.Goal + ". That's what I'm working toward."
 	case containsAny(lower, "work", "job", "craft", "trade"):
@@ -1167,7 +1326,19 @@ func (w *World) adjustRel(from, to *Agent, dLike, dTrust int) {
 	r.Trust = clamp(r.Trust+dTrust, 0, 100)
 }
 
+// remember 写入一条记忆。对"非玩家痕迹"的记忆做近期去重，避免同一反思
+// 被每天重复堆叠（scarcity 反思、交租失败等硬编码文本都会命中）。
+// 玩家痕迹（src=player）不去重，以保证 echo 回响机制依赖的 a.Mem[0] 始终是最新一条。
 func (w *World) remember(a *Agent, text string, imp int) {
+	const dedupeWindow = 30
+	for i, m := range a.Mem {
+		if i >= dedupeWindow {
+			break
+		}
+		if m.Src != "player" && m.Text == text {
+			return
+		}
+	}
 	a.Mem = append([]Memory{{Day: w.Day(), Minute: w.Minute(), Text: text, Imp: imp}}, a.Mem...)
 	if len(a.Mem) > 60 {
 		a.Mem = a.Mem[:60]

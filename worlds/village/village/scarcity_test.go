@@ -62,13 +62,41 @@ func TestDepartureWritesOffDebt(t *testing.T) {
 	if _, stillOwed := w.agents[1].Owes[2]; stillOwed {
 		t.Fatalf("离村后债务应当清除")
 	}
-	found := false
+	var gone *Event
 	for _, e := range w.events {
 		if e.Type == "gone" {
-			found = true
+			gone = &e
 		}
 	}
-	if !found {
+	if gone == nil {
 		t.Fatalf("应当产生一条 gone 事件")
+	}
+	// 结构化因果链：WhyTrace 必须存在且可追溯
+	tr := w.agents[1].DepartTrace
+	if tr == nil {
+		t.Fatalf("离村 agent 应当持久化 WhyTrace（便于事后查询为什么离开）")
+	}
+	if tr.Rule != "scarcity.departLocked" {
+		t.Fatalf("Rule 应为 scarcity.departLocked，实际 %q", tr.Rule)
+	}
+	if tr.Decision != "departure triggered by scarcity rule (irreversible)" {
+		t.Fatalf("Decision 缺失，实际 %q", tr.Decision)
+	}
+	// Cause 必须含触发数值与阈值
+	causeOK := false
+	for _, c := range tr.Cause {
+		if c == "money=-40 (debt threshold=-30)" {
+			causeOK = true
+		}
+	}
+	if !causeOK {
+		t.Fatalf("Cause 应给出 money 与阈值，实际 %v", tr.Cause)
+	}
+	if gone.Trace == nil || gone.Trace.Rule != tr.Rule {
+		t.Fatalf("gone 事件也应携带同一份 Trace")
+	}
+	// 事件也应兼容旧字段 Why
+	if len(gone.Why) == 0 {
+		t.Fatalf("gone 事件应保留兼容的 Why 字段")
 	}
 }

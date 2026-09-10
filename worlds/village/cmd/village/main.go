@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -33,7 +34,6 @@ import (
 	"agentworld/internal/life"
 	"agentworld/internal/llm"
 	"agentworld/worlds/village"
-	vv "agentworld/worlds/village/village"
 )
 
 func main() {
@@ -84,9 +84,28 @@ func main() {
 	brk := bus.NewBroker()
 	rt := agent.NewRuntime(d, llmClient, brk)
 
+	// 跨进程 Life Registry：登记各 World 的 Endpoint，使本进程发起 Travel 时能按 WorldKey 寻址。
+	// 需在 Hub 工厂之前声明，供 Planner 注入的 Mover 闭包捕获。
+	lifeReg := life.NewRegistry()
+	lifeReg.SetEndpoint("village", envOr("VILLAGE_LIFE_URL", "http://localhost:19200/life"))
+	lifeReg.SetEndpoint("economy", envOr("ECO_LIFE_URL", "http://localhost:19301/life"))
+
 	// 4) Hub：每游客一个独立世界，工厂按 uid 惰性创建（DB Agent + World + Module + 调度 + 时钟）
 	hub := village.NewHub(func(uid string, ctx context.Context) (*village.Instance, error) {
-		return village.NewInstance(uid, ctx, d, llmClient, rt, interval, speed, dailyActs, snapDir)
+		inst, err := village.NewInstance(uid, ctx, d, llmClient, rt, interval, speed, dailyActs, snapDir)
+		if err == nil && inst != nil {
+			// M9-A：注入跨世界出行回调。Village 不持有 Economy 代码，只经 life.Registry
+			// 的 Endpoint 发起 MoveRemote；Planner 自主决定跨世界时由这里真正执行。
+			inst.World.SetMover(func(localID int64, toWorld string) error {
+				ep, ok := lifeReg.Endpoint(toWorld)
+				if !ok {
+					return fmt.Errorf("no endpoint registered for world %q", toWorld)
+				}
+				_, merr := life.MoveRemote(inst.Adapter, ep, life.StableID("village", localID))
+			return merr
+			})
+		}
+		return inst, err
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,10 +127,6 @@ func main() {
 	}()
 
 	// 6) HTTP + SSE + 内嵌前端
-	// 跨进程 Life Registry：登记各 World 的 Endpoint，使本进程发起 Travel 时能按 WorldKey 寻址。
-	lifeReg := life.NewRegistry()
-	lifeReg.SetEndpoint("village", envOr("VILLAGE_LIFE_URL", "http://localhost:19200/life"))
-	lifeReg.SetEndpoint("economy", envOr("ECO_LIFE_URL", "http://localhost:19301/life"))
 	srv := village.NewServer(hub, lifeReg)
 	go func() {
 		if err := srv.Start(addr); err != nil && err.Error() != "http: Server closed" {
@@ -129,21 +144,8 @@ func main() {
 		}
 	}
 
-	// 跨进程 Travel 扫描：当演示世界里的 Marcus 本地经济机会不足（金币未达目标）时，
-	// 由 Life Runtime 把他送到 Economy。回村后金币达标则不再出发（避免来回横跳）。
-	// 注意：Village 不调用 Economy 任何代码，只经 life.Registry 的 Endpoint（HTTP）移动 Agent。
-	go func() {
-		tk := time.NewTicker(15 * time.Second)
-		defer tk.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tk.C:
-				scanVillageTravel(hub, lifeReg)
-			}
-		}
-	}()
+	// M9-A：跨世界出行改由 Village Planner 自主决策（见 village.decide 的跨世界分支），
+	// 不再由本处的定时器扫描强制触发。下方的 scanVillageTravel 已废弃移除。
 
 	if llmClient.Enabled() {
 		log.Printf("[village] 玩家对话 LLM 已启用（%s）", llmClient.ModelName())
@@ -161,47 +163,8 @@ func main() {
 	cancel()
 }
 
-// scanVillageTravel 让演示世界里的 Marcus 在本地经济机会不足时，自主前往 Economy 谋生。
-// 规则：Marcus 在 Village 且金币 < 380（目标未达成）→ 由 Life Runtime 送他去 Economy；
-// 回村后金币 >= 380 → 不再出发。整个过程 Village 不持有 Economy 的任何代码引用。
-func scanVillageTravel(hub *village.Hub, reg *life.Registry) {
-	uid := hub.DefaultUID()
-	if uid == "" {
-		return
-	}
-	inst, err := hub.Get(uid)
-	if err != nil {
-		return
-	}
-	local, ok := inst.World.FindAgentByName("John") // 铁匠 Marcus
-	if !ok {
-		return
-	}
-	stable := life.StableID("village", local)
-	if _, ok := inst.Adapter.LocalID(stable); !ok {
-		return // 不在村（旅行中/已离场）
-	}
-	raw, ok := inst.Adapter.StoreGet(local)
-	if !ok {
-		return
-	}
-	ag := raw.(*vv.Agent)
-	// 目标：把铁匠技艺练到 Lv80 以上（去经济世界打过工即达成）。避免依赖精确金币数，
-	// 也防止来回横跳：回村后技艺已提升，便不再出发。
-	if lvl, ok := ag.Skills["Blacksmithing"]; ok && lvl >= 80 {
-		return
-	}
-	ecoURL, ok := reg.Endpoint("economy")
-	if !ok {
-		return
-	}
-	if tr, err := life.MoveRemote(inst.Adapter, ecoURL, stable); err == nil {
-		inst.World.EmitEvent("departure", "🚀", ag.Name, "Blacksmith "+ag.Name+" leaves the village for the Economy world", "goal: improve the economy")
-		log.Printf("[village] Marcus 出发去经济世界（%s）", tr.Status)
-	} else {
-		log.Printf("[village] Marcus 出发失败: %v", err)
-	}
-}
+// scanVillageTravel 已废弃（M9-A）：跨世界出行现由 Village Planner 在 decide() 中自主决策，
+// 经注入的 World.mover 真正发起 MoveRemote，不再由外部定时器扫描强制触发。
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {

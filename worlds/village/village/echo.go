@@ -91,6 +91,9 @@ func (w *World) echoText(a *Agent, m *Memory) string {
 		if a.GoalDone {
 			return fmt.Sprintf("%s's dream finally came true. Ask him who made it possible and he names a traveler.", a.Name)
 		}
+		if a.GoalAbandoned {
+			return fmt.Sprintf("%s still keeps the coins the Traveler gave him, but his old dream is set aside now. He doesn't talk about it.", a.Name)
+		}
 		return pickStr(w.rng, []string{
 			fmt.Sprintf("%s still keeps the coins the Traveler gave him apart from the rest. They are not for spending.", a.Name),
 			fmt.Sprintf("Tonight %s counted his purse twice, and thought of the hand that filled it.", a.Name),

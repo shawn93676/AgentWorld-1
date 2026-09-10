@@ -12,6 +12,7 @@
 //	GET  /api/threads           → 悬念线程（未决的在前）
 //	POST /api/threads/{id}/decide {choice}        → 对一条悬念做出选择
 //	POST /api/speed             {speed}           → 世界流速（每 tick 游戏分钟）
+//	GET  /api/whylog?days=N     → Causal Life Log（重要决定的结构化因果：为什么离开/完成目标/接受影响/做选择）
 //	GET  /api/stream            → SSE（village.state / village.event）
 //
 // 每个游客（cookie wc_uid）拥有独立世界，所有 handler 先解析其世界实例再处理。
@@ -50,6 +51,7 @@ func NewServer(hub *Hub, reg *life.Registry) *Server {
 	s.mux.HandleFunc("/api/threads", s.handleThreads)
 	s.mux.HandleFunc("/api/threads/", s.handleThreadDecide)
 	s.mux.HandleFunc("/api/speed", s.handleSpeed)
+	s.mux.HandleFunc("/api/whylog", s.handleWhyLog)
 	s.mux.HandleFunc("/api/stream", s.handleStream)
 	// 跨进程 Life 端点：Economy（或其他世界）POST /life/enter 把 Agent 落入本游客的世界。
 	s.mux.HandleFunc("/life/enter", s.handleLifeEnter)
@@ -313,6 +315,26 @@ func (s *Server) handleSpeed(w http.ResponseWriter, r *http.Request) {
 	}
 	inst.Mod.Game().SetSpeed(int(toInt64(body["speed"])))
 	writeJSON(w, map[string]interface{}{"speed": inst.Mod.Game().Speed()})
+}
+
+// handleWhyLog 返回 Village 的 Causal Life Log（重要决定的结构化因果记录）。
+// 可选 ?days=N 只取最近 N 天，用于"过去 7 天发生了哪些重要决定、为什么"。
+//
+//	GET /api/whylog        → 全部 WhyLog
+//	GET /api/whylog?days=7 → 最近 7 天
+func (s *Server) handleWhyLog(w http.ResponseWriter, r *http.Request) {
+	inst := s.hub.PrimaryInstance()
+	if inst == nil {
+		http.Error(w, "no demo world", http.StatusNotFound)
+		return
+	}
+	if d := r.URL.Query().Get("days"); d != "" {
+		if n, e := strconv.Atoi(d); e == nil && n > 0 {
+			writeJSON(w, map[string]interface{}{"day": inst.Mod.Game().Day(), "whylog": inst.Mod.Game().WhyLogLast(n)})
+			return
+		}
+	}
+	writeJSON(w, map[string]interface{}{"day": inst.Mod.Game().Day(), "whylog": inst.Mod.Game().WhyLog()})
 }
 
 // handleLifeEnter 跨进程 Travel 的落地入口：Economy 把 Marcus 的 AgentPortable POST 到这里，

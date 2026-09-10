@@ -94,6 +94,8 @@ body { background:#e8e0d5; display:flex; justify-content:center; align-items:cen
 .story-item .desc { font-size:13.5px; color:#2d2419; margin-top:2px; line-height:1.35; }
 .story-item .reason { display:none; font-size:12px; color:#6b5b4b; background:#f5efe8; padding:8px 10px; border-radius:10px; margin-top:8px; border-left:2px solid #b5838d; }
 .story-item.expanded .reason { display:block; }
+.story-item .reason .rule { display:block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:#9a6a3a; margin-bottom:4px; }
+.story-item .reason b { color:#3f3326; }
 .story-item .expand-hint { font-size:11px; color:#9a8b7a; margin-top:4px; }
 .empty-tip { text-align:center; color:#9a8b7a; font-size:13px; padding:30px 10px; }
 
@@ -230,6 +232,25 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
 .share-copy { flex:1; background:#efe2cf; border:none; border-radius:12px; padding:10px; font-weight:700; color:#5c3d2e; cursor:pointer; }
 .share-copy:active { background:#e6d4ba; }
 .share-hint { text-align:center; font-size:11.5px; color:#9a8b7a; margin-top:8px; }
+
+/* ---------- causal life log (Why) ---------- */
+.why-head { font-size:16px; font-weight:700; color:#2d2419; margin:2px 0 2px; }
+.why-sub { color:#7a6a58; font-size:12.5px; margin-bottom:10px; line-height:1.4; }
+.why-range { display:flex; gap:6px; margin-bottom:12px; }
+.why-range button { background:#ede5d9; border:none; border-radius:20px; padding:5px 16px; font-size:12px; font-weight:600; color:#5c3d2e; cursor:pointer; }
+.why-range button.on { background:#5c3d2e; color:#fff; }
+.why-summary { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.why-summary .ws { background:#fcf7f0; border:1px solid #ede5d9; border-radius:12px; padding:6px 8px; font-size:11px; color:#6b5b4b; flex:1; min-width:64px; text-align:center; }
+.why-summary .ws b { display:block; font-size:16px; color:#2d2419; line-height:1.1; }
+.why-item { background:#fcf7f0; border:1px solid #ede5d9; border-left-width:4px; border-radius:14px; padding:10px 14px; margin-bottom:8px; box-shadow:0 3px 12px rgba(150,120,70,.10); }
+.why-item .wi-top { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:700; color:#7a6a58; letter-spacing:.3px; flex-wrap:wrap; }
+.why-item .wi-top .day { background:#ede5d9; border-radius:10px; padding:1px 8px; color:#5c3d2e; }
+.why-item .wi-agent { color:#2d2419; }
+.why-item .wi-rule { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:#9a6a3a; margin:6px 0 3px; }
+.why-item .wi-detail { font-size:13.5px; color:#2d2419; line-height:1.35; margin-bottom:2px; }
+.why-item .blk { font-size:12px; color:#6b5b4b; margin-top:5px; line-height:1.45; }
+.why-item .blk .lbl { font-weight:700; color:#5c3d2e; }
+.why-empty { text-align:center; color:#9a8b7a; font-size:13px; padding:30px 10px; line-height:1.6; }
 </style>
 </head>
 <body>
@@ -311,12 +332,25 @@ body { background:linear-gradient(160deg,#efe7da,#e2d4c0 60%,#d8c6ad); }
       </div>
       <div style="margin-top:18px;text-align:center;font-size:12px;color:#b0a392;">Agents live here even when you're away 🌙</div>
     </div>
+
+    <div class="screen" id="screenWhy">
+      <div class="why-head">🔍 Causal Life Log</div>
+      <div class="why-sub">Why did things happen — not just what. Every major decision carries its cause chain.</div>
+      <div class="why-range" id="whyRange">
+        <button data-days="7" class="on">7d</button>
+        <button data-days="30">30d</button>
+        <button data-days="0">All</button>
+      </div>
+      <div class="why-summary" id="whySummary"></div>
+      <div id="whyLogList"></div>
+    </div>
   </div>
 
   <div class="tab-bar">
     <button class="tab-item active" data-tab="screenVillage"><span class="tab-icon">🏘️</span><span>Village</span></button>
     <button class="tab-item" data-tab="screenPeople"><span class="tab-icon">👥</span><span>People</span></button>
     <button class="tab-item" data-tab="screenStory"><span class="tab-icon">📜</span><span>Story</span></button>
+    <button class="tab-item" data-tab="screenWhy"><span class="tab-icon">🔍</span><span>Why</span></button>
     <button class="tab-item" data-tab="screenMe"><span class="tab-icon">🧑</span><span>Me</span></button>
   </div>
 
@@ -352,8 +386,19 @@ const WEATHER = {"Sunny":"☀️","Cloudy":"☁️","Rainy":"🌧️","Windy":"�
 const TYPE_COLOR = {move:"#4d6a8a",activity:"#4d7a6a",social:"#b5838d",economy:"#c98a3d",conflict:"#c44536",
   disaster:"#c44536",milestone:"#3a7a5a",player:"#5c3d2e",day:"#7a6a58",flavor:"#6a5a8a",
   thread:"#c98a3d",thread_done:"#3a7a5a",echo:"#8a6d3b"};
+const WHY_META = {
+  "departure":        {icon:"🚪", color:"#c44536"},
+  "goal.completed":   {icon:"🎉", color:"#3a7a5a"},
+  "goal.abandoned":   {icon:"💔", color:"#8a4d6a"},
+  "goal.form":        {icon:"🎯", color:"#c98a3d"},
+  "influence.accept": {icon:"💬", color:"#4d6a8a"},
+  "influence.reject": {icon:"🙅", color:"#9a8b7a"},
+  "thread.choice":    {icon:"⚡", color:"#c98a3d"}
+};
+function whyMeta(kind) { return WHY_META[kind] || {icon:"•", color:"#d4c5b2"}; }
+function kindLabel(k) { return (k||"").replace(/\./g, " "); }
 const SPEEDS = [[2,"🐢"],[10,"▶"],[30,"⏩"],[60,"🚀"]];
-const S = { st:null, viewDay:null, colors:{}, modalId:null, chat:{}, events:[], es:null, poll:null, storyLoading:false };
+const S = { st:null, viewDay:null, colors:{}, modalId:null, chat:{}, events:[], es:null, poll:null, storyLoading:false, whyDays:7, whylog:[] };
 const BASE = (location.pathname.split("/")[1] ? "/" + location.pathname.split("/")[1] : "");
 
 async function api(path, opts) {
@@ -632,13 +677,71 @@ function renderStory() {
   list.querySelectorAll(".story-item").forEach(el => el.addEventListener("click", () => el.classList.toggle("expanded")));
 }
 function storyItemHTML(e, fresh) {
-  const why = (e.why && e.why.length)
-    ? '<div class="reason"><strong>Why?</strong><br>' + e.why.map(w => "• " + esc(w)).join("<br>") + '</div>'
-      + '<div class="expand-hint">Tap to see why →</div>' : "";
+  const why = (() => {
+    const parts = [];
+    if (e.trace) {
+      const t = e.trace;
+      let h = '<div class="reason"><strong>Why?</strong><br>';
+      if (t.rule) h += '<em class="rule">' + esc(t.rule) + '</em><br>';
+      if (t.cause && t.cause.length) h += '<b>Cause:</b><br>' + t.cause.map(c => "• " + esc(c)).join("<br>") + '<br>';
+      if (t.recent && t.recent.length) h += '<b>Recent causes:</b><br>' + t.recent.map(c => "• " + esc(c)).join("<br>") + '<br>';
+      if (t.decision) h += '<b>Decision:</b> ' + esc(t.decision);
+      h += '</div>';
+      parts.push(h);
+    } else if (e.why && e.why.length) {
+      parts.push('<div class="reason"><strong>Why?</strong><br>' + e.why.map(w => "• " + esc(w)).join("<br>") + '</div>');
+    }
+    if (parts.length) parts.push('<div class="expand-hint">Tap to see why →</div>');
+    return parts.join("");
+  })();
   const who = e.actor ? '<span style="color:#9a8b7a;">' + esc(e.actor) + (e.target ? " → " + esc(e.target) : "") + '</span> · ' : "";
   return '<div class="story-item'+(fresh?" fresh":"")+'" style="border-left-color:'+(TYPE_COLOR[e.type]||"#d4c5b2")+'">'
     + '<div class="time">'+e.icon+" "+e.clock+" · "+who+"#"+e.id+'</div>'
     + '<div class="desc">'+esc(e.text)+'</div>'+why+'</div>';
+}
+
+/* ---------- causal life log (Why) ---------- */
+async function loadWhyLog() {
+  const days = S.whyDays;
+  let url = "/api/whylog";
+  if (days > 0) url += "?days=" + days;
+  try {
+    const r = await api(url);
+    S.whylog = r.whylog || [];
+  } catch(e) { S.whylog = []; }
+  renderWhyLog();
+}
+function renderWhyLog() {
+  const list = $("whyLogList");
+  const items = S.whylog || [];
+  const sumEl = $("whySummary");
+  if (!items.length) {
+    sumEl.innerHTML = "";
+    list.innerHTML = '<div class="why-empty">No major decisions recorded in this window yet.<br>The village is still young — come back after it has lived a while 🌿</div>';
+    return;
+  }
+  // 汇总：每种决定的数量
+  const sum = {};
+  items.forEach(it => { const k = it.kind || "other"; sum[k] = (sum[k] || 0) + 1; });
+  sumEl.innerHTML = Object.keys(sum).map(k => {
+    const m = whyMeta(k);
+    return '<div class="ws"><b>'+sum[k]+'</b>'+m.icon+' '+esc(kindLabel(k))+'</div>';
+  }).join("");
+  // 最新在前
+  list.innerHTML = items.slice().reverse().map(it => {
+    const m = whyMeta(it.kind);
+    let h = '<div class="why-item" style="border-left-color:'+m.color+'">';
+    h += '<div class="wi-top"><span class="day">Day '+it.day+'</span>'
+      + '<span class="wi-agent">'+m.icon+' '+esc(it.agent || "Someone")+'</span>'
+      + '<span>'+esc(kindLabel(it.kind || ""))+'</span></div>';
+    if (it.detail) h += '<div class="wi-detail">'+esc(it.detail)+'</div>';
+    h += '<div class="wi-rule">'+esc(it.rule || "")+'</div>';
+    if (it.cause && it.cause.length) h += '<div class="blk"><span class="lbl">Cause:</span><br>'+it.cause.map(c => "• "+esc(c)).join("<br>")+'</div>';
+    if (it.recent && it.recent.length) h += '<div class="blk"><span class="lbl">Recent causes:</span><br>'+it.recent.map(c => "• "+esc(c)).join("<br>")+'</div>';
+    if (it.decision) h += '<div class="blk"><span class="lbl">Decision:</span> '+esc(it.decision)+'</div>';
+    h += '</div>';
+    return h;
+  }).join("");
 }
 
 /* ---------- share card (P2: social currency) ---------- */
@@ -876,6 +979,15 @@ document.querySelectorAll(".tab-item").forEach(tab => tab.addEventListener("clic
   document.querySelectorAll(".screen").forEach(s => s.classList.toggle("active", s.id === this.dataset.tab));
   $("mainContent").scrollTop = 0;
   if (this.dataset.tab === "screenStory") loadDay(null);
+  if (this.dataset.tab === "screenWhy") loadWhyLog();
+}));
+
+/* ---------- why range chips ---------- */
+document.querySelectorAll("#whyRange button").forEach(b => b.addEventListener("click", function() {
+  document.querySelectorAll("#whyRange button").forEach(x => x.classList.remove("on"));
+  this.classList.add("on");
+  S.whyDays = +this.dataset.days;
+  loadWhyLog();
 }));
 
 /* ---------- SSE ---------- */
@@ -918,6 +1030,12 @@ function onWorldEvent(e) {
     }
   }
   if (["milestone","disaster","player","day","conflict","thread","thread_done","echo"].includes(e.type)) toast(e);
+  // 若正在看 Why 屏，且事件会产生因果记录，则防抖刷新时间线
+  if ($("screenWhy").classList.contains("active")
+      && ["gone","milestone","despair","thread_done"].includes(e.type)) {
+    if (S.whyReloadT) clearTimeout(S.whyReloadT);
+    S.whyReloadT = setTimeout(loadWhyLog, 800);
+  }
 }
 function isLimit(e) { return !!(e && (e.status === 429 || (e.body && e.body.error === "daily_limit"))); }
 async function showLimit(e) {

@@ -79,6 +79,9 @@ type Agent struct {
 	Goal        string
 	GoalTarget  int64
 	GoalDone    bool
+	GoalAbandoned bool // 已放弃目标（不可逆于当前模拟？——可因一笔横财重燃希望）
+	goalBest      int64 // 向目标攒下的"历史最高积蓄"，用于判定是否停滞
+	goalStallDays int   // 连续未刷新 goalBest 的天数
 	Workplace   string
 	Home        string
 	BedHour     int
@@ -90,6 +93,7 @@ type Agent struct {
 	ActKind     string    // work / sleep / eat / social / travel / rest / shop / idle
 	Action      string    // 给人看的当前动作
 	TravelTo    string    // travel 中的目的地
+	Crossing    bool      // 跨世界出行标记（travel 且目标非本村地点时为真，由 Mover 真正移动）
 	NextAct     *Activity // travel 到达后要进入的活动（不持久化）
 	ActionUntil int64     // 绝对游戏分钟
 	Due         bool      // 需要重新决策
@@ -101,10 +105,44 @@ type Agent struct {
 	Plan        *Plan
 	LastChatAt  map[int64]int64 // 与某 Agent 最近一次互动的绝对分钟
 	rentPaidDay int
-	lastWarnDay int // 上次发出"撑不住了"预兆的日子（每天至多一次）
+	// 离村因果链：持久化在 agent 上（不依赖事件环形缓冲），便于事后直接查询"为什么离开了"。
+	DepartTrace *WhyTrace `json:"depart_trace,omitempty"`
+	DepartDay   int       `json:"depart_day,omitempty"`
+	RentMisses  int       `json:"rent_misses,omitempty"` // 累计欠租次数，作为 Recent causes 的素材
+	lastWarnDay int       // 上次发出"撑不住了"预兆的日子（每天至多一次）
 	// Attach 阶段的暂存：等所有 Agent 到齐后在 SealRelations 里按名字编织。
 	snapRel  map[string]relSnap // 快照恢复的关系（优先于种子）
 	snapOwes map[string]int64   // 快照恢复的债务
+}
+
+// WhyTrace 一条结构化因果解释：让 Agent 的决定对人类可追溯。
+// 它取代（并兼容）原来扁平的 Why 字符串，回答"到底为什么发生了这件事"——
+// 不是"John left"，而是"John left，因为 money=-33 触及债务阈值 -30，且近期连续欠租"。
+//
+// 字段对应向人类解释因果链的三段：
+//   - Cause：直接触发条件（数值 vs 阈值）
+//   - Recent：因果链（导致触发的前因，如连续欠租、空钱袋记忆）
+//   - Decision：系统依据哪条规则做出了什么不可逆转的决定
+type WhyTrace struct {
+	Rule     string   `json:"rule,omitempty"`     // 触发的规则/机制名，如 "scarcity.departLocked"
+	Cause    []string `json:"cause,omitempty"`    // 直接触发条件：money=-33 / debt threshold=-30
+	Recent   []string `json:"recent,omitempty"`   // 因果链：rent unpaid ×3 / repeated empty pouch
+	Decision string   `json:"decision,omitempty"` // 系统最终决定
+}
+
+// WhyLogEntry 一条"重要决定"的因果记录，构成 Village 的 Causal Life Log：
+// 事件流（Event Log）之上的第二层——"过去 N 天发生了哪些重要决定，为什么"。
+// 与 Event 不同，WhyLog 只收口 4 类关键决定（departure / goal / influence / thread），
+// 且持久化在快照里，可被直接查询，不随 1500 条事件环形缓冲滚出。
+type WhyLogEntry struct {
+	Day      int      `json:"day"`
+	Agent    string   `json:"agent"`
+	Kind     string   `json:"kind"`               // departure / goal.completed / influence.accept / thread.choice ...
+	Rule     string   `json:"rule"`
+	Cause    []string `json:"cause,omitempty"`
+	Recent   []string `json:"recent,omitempty"`
+	Decision string   `json:"decision,omitempty"`
+	Detail   string   `json:"detail,omitempty"`
 }
 
 // Event 一条世界事件（G0 §10/§11：带"Why"的故事流）。
@@ -119,7 +157,8 @@ type Event struct {
 	Target string   `json:"target,omitempty"`
 	Place  string   `json:"place,omitempty"`
 	Text   string   `json:"text"`
-	Why    []string `json:"why,omitempty"`
+	Why    []string `json:"why,omitempty"`    // 兼容旧前端：扁平原因
+	Trace  *WhyTrace `json:"trace,omitempty"` // 结构化因果链（前端优先渲染，缺省回退到 Why）
 }
 
 // Player 玩家（Observer / Influencer）。V0.1 单玩家免登录。
@@ -163,6 +202,19 @@ type World struct {
 	pending   map[string]agentSnap // Load 后等待 Attach 恢复的数据
 	seeds     map[int64]Profile    // Attach 暂存的人设（SealRelations 用）
 	tickN     int64
+	whyLog    []WhyLogEntry        // Causal Life Log：重要决定的结构化因果记录
+
+	// mover 跨世界出行回调（M9-A）：Planner 决定跨世界时由外部注入真正执行 MoveRemote。
+	// World 自身不持有其他世界的代码引用，保持 World Protocol 的“世界无关性”。
+	mover func(id int64, toWorld string) error
+}
+
+// SetMover 注入跨世界出行回调（M9-A）。外部（持有 life.Registry 的进程）传入真正执行
+// life.MoveRemote 的实现；未注入时 Village 不会主动跨世界，保持世界无关性。
+func (w *World) SetMover(m func(id int64, toWorld string) error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.mover = m
 }
 
 // ---- 时钟 ----
@@ -244,6 +296,12 @@ func (w *World) Attach(id int64, p Profile) {
 	if snap, ok := w.pending[a.Name]; ok {
 		a.Money, a.Energy, a.Mood = snap.Money, snap.Energy, snap.Mood
 		a.Gone = snap.Gone
+		a.DepartTrace = snap.DepartTrace
+		a.DepartDay = snap.DepartDay
+		a.RentMisses = snap.RentMisses
+		a.GoalAbandoned = snap.GoalAbandoned
+		a.goalBest = snap.GoalBest
+		a.goalStallDays = snap.GoalStallDays
 		a.Place, a.ActKind, a.Action, a.TravelTo = snap.Place, snap.ActKind, snap.Action, snap.TravelTo
 		a.ActionUntil, a.GoalDone = snap.ActionUntil, snap.GoalDone
 		a.Plan = snap.Plan
@@ -257,6 +315,20 @@ func (w *World) Attach(id int64, p Profile) {
 		}
 		a.Due = true
 		a.snapRel, a.snapOwes = snap.Rel, snap.Owes
+	}
+	// 目标形成：仅在全新世界（非从快照恢复）时为有目标的村民记录一次"为什么立下这个目标"。
+	if _, restored := w.pending[a.Name]; !restored && a.Goal != "" {
+		tr := &WhyTrace{
+			Rule:     "goal.form",
+			Cause:    []string{fmt.Sprintf("occupation=%s", a.Occupation), "ambition seeded by world"},
+			Recent:   []string{fmt.Sprintf("dream: %s", a.Goal)},
+			Decision: fmt.Sprintf("villager now pursues: %s", a.Goal),
+		}
+		w.addEvent(Event{Type: "goal", Icon: "🎯", Actor: a.Name, Place: a.Place,
+			Text: fmt.Sprintf("%s has set his heart on: %s.", a.Name, a.Goal),
+			Why:  []string{"A villager's ambition", a.Goal},
+			Trace: tr})
+		w.logWhy(a.Name, "goal.form", tr, a.Goal)
 	}
 	w.agents[id] = a
 	w.agentOrd = append(w.agentOrd, id)
@@ -368,6 +440,73 @@ func (w *World) FindAgentByName(name string) (int64, bool) {
 	return 0, false
 }
 
+// ---- Causal Life Log（WhyLog）----
+
+// logWhy 把一条"重要决定"写入 WhyLog。须持锁调用（所有调用点都在 Tick / 玩家动作加锁区内）。
+// 这样 Agent 的每一次关键行为都可被事后追问"为什么"，而非淹没在事件流里。
+func (w *World) logWhy(agentName, kind string, tr *WhyTrace, detail string) {
+	if tr == nil {
+		return
+	}
+	w.whyLog = append(w.whyLog, WhyLogEntry{
+		Day:      w.Day(),
+		Agent:    agentName,
+		Kind:     kind,
+		Rule:     tr.Rule,
+		Cause:    tr.Cause,
+		Recent:   tr.Recent,
+		Decision: tr.Decision,
+		Detail:   detail,
+	})
+	if len(w.whyLog) > 1000 {
+		w.whyLog = w.whyLog[len(w.whyLog)-1000:]
+	}
+}
+
+// WhyLog 返回全部重要决定的因果记录（调用方自行加锁读取最新副本逻辑已在 Tick 内完成）。
+func (w *World) WhyLog() []WhyLogEntry {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]WhyLogEntry, len(w.whyLog))
+	copy(out, w.whyLog)
+	return out
+}
+
+// WhyLogLast 返回最近 days 天（含今天）的重要决定，用于"过去 N 天发生了什么、为什么"。
+func (w *World) WhyLogLast(days int) []WhyLogEntry {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if days <= 0 {
+		days = 7
+	}
+	since := w.Day() - days + 1
+	out := make([]WhyLogEntry, 0, len(w.whyLog))
+	for _, e := range w.whyLog {
+		if e.Day >= since {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// recentPlayerMemories 抽取 Agent 近期"玩家留下的痕迹"（Src=="player"）文本，最多 n 条，
+// 用于 Influence 的 Recent causes（"玩家昨天帮了我"之类）。
+func recentPlayerMemories(a *Agent, n int) []string {
+	var out []string
+	for _, m := range a.Mem {
+		if m.Src == "player" {
+			out = append(out, m.Text)
+			if len(out) >= n {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, "no recent player interaction")
+	}
+	return out
+}
+
 // EmitEvent 向世界事件流追加一条事件（用于跨世界旅程的 departure / work / return 可见性）。
 func (w *World) EmitEvent(typ, icon, actor, text string, why ...string) {
 	w.mu.Lock()
@@ -431,6 +570,12 @@ type agentSnap struct {
 	Energy      int                `json:"energy"`
 	Mood        int                `json:"mood"`
 	Gone        bool               `json:"gone,omitempty"`
+	DepartTrace *WhyTrace          `json:"depart_trace,omitempty"`
+	DepartDay   int                `json:"depart_day,omitempty"`
+	RentMisses  int                `json:"rent_misses,omitempty"`
+	GoalAbandoned bool             `json:"goal_abandoned,omitempty"`
+	GoalBest      int64            `json:"goal_best,omitempty"`
+	GoalStallDays int              `json:"goal_stall_days,omitempty"`
 	Place       string             `json:"place"`
 	ActKind     string             `json:"act_kind"`
 	Action      string             `json:"action"`
@@ -451,10 +596,11 @@ type snapshot struct {
 	Weather   string      `json:"weather"`
 	Player    Player      `json:"player"`
 	Repair    bool        `json:"repair"`
-	Agents    []agentSnap `json:"agents"`
-	Events    []Event     `json:"events"` // 旧的在前
-	Threads   []Thread    `json:"threads,omitempty"`
-	ThreadSeq int64       `json:"thread_seq,omitempty"`
+	Agents    []agentSnap   `json:"agents"`
+	Events    []Event       `json:"events"` // 旧的在前
+	Threads   []Thread      `json:"threads,omitempty"`
+	ThreadSeq int64         `json:"thread_seq,omitempty"`
+	WhyLog    []WhyLogEntry `json:"why_log,omitempty"`
 }
 
 // Save 落盘快照。
@@ -469,7 +615,8 @@ func (w *World) saveLocked() error {
 		return nil
 	}
 	snap := snapshot{Version: 1, Now: w.now, Speed: w.speed, Weather: w.weather,
-		Player: w.player, Repair: w.repair, Threads: w.threads, ThreadSeq: w.threadSeq}
+		Player: w.player, Repair: w.repair, Threads: w.threads, ThreadSeq: w.threadSeq,
+		WhyLog: w.whyLog}
 	nameOf := func(id int64) string {
 		if a := w.agents[id]; a != nil {
 			return a.Name
@@ -479,6 +626,8 @@ func (w *World) saveLocked() error {
 	for _, id := range w.agentOrd {
 		a := w.agents[id]
 		s := agentSnap{Name: a.Name, Money: a.Money, Energy: a.Energy, Mood: a.Mood, Gone: a.Gone,
+			DepartTrace: a.DepartTrace, DepartDay: a.DepartDay, RentMisses: a.RentMisses,
+			GoalAbandoned: a.GoalAbandoned, GoalBest: a.goalBest, GoalStallDays: a.goalStallDays,
 			Place: a.Place, ActKind: a.ActKind, Action: a.Action, TravelTo: a.TravelTo,
 			ActionUntil: a.ActionUntil, GoalDone: a.GoalDone, Plan: a.Plan, Mem: a.Mem,
 			Rel: map[string]relSnap{}, Owes: map[string]int64{}}
@@ -555,4 +704,5 @@ func (w *World) Load() {
 	for _, s := range snap.Agents {
 		w.pending[s.Name] = s
 	}
+	w.whyLog = snap.WhyLog
 }
